@@ -922,6 +922,9 @@ Returns list of successfully processed block positions."
 
     (nreverse processed-positions)))
 
+
+
+
 ;;;; Built-in Type Registrations
 
 ;; Register orgit-file type
@@ -960,7 +963,7 @@ Returns list of successfully processed block positions."
 
 ;;;; Planned Features
 
-;; TODO 2025-11-01: Refresh functionality deferred to v0.2.0.
+;; TODO 2025-11-01: Refresh functionality deferred to v0.3.0.
 ;; Planned implementation:
 ;; - `org-transclusion-blocks-refresh' - refresh block at point
 ;; - `org-transclusion-blocks-refresh-all' - refresh all blocks
@@ -968,7 +971,7 @@ Returns list of successfully processed block positions."
 ;; - Indicate outdated blocks via overlay or face property
 ;; - Optional auto-refresh on file open via find-file-hook
 
-;; TODO 2025-11-15: Diff functionality deferred to v0.2.0.
+;; TODO 2025-11-15: Diff functionality deferred to v0.3.0.
 ;; Planned implementation:
 ;; - `org-transclusion-blocks-diff' - show diff at point
 ;; - Compare cached content (current block body) with live fetch
