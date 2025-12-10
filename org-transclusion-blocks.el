@@ -99,8 +99,7 @@
 
 (defgroup org-transclusion-blocks nil
   "Transclude content into Org src blocks via headers."
-  :group 'org-transclusion
-  )
+  :group 'org-transclusion)
 
 (defcustom org-transclusion-blocks-indicator-duration 2.0
   "Seconds to display success indicator after content update.
@@ -108,8 +107,7 @@
 Shows checkmark overlay on updated src block for this duration.
 Set to 0 to disable indicator."
   :type 'number
-  :group 'org-transclusion-blocks
-  )
+  :group 'org-transclusion-blocks)
 
 (defcustom org-transclusion-blocks-timestamp-property 'org-transclusion-blocks-fetched
   "Text property name for storing fetch timestamp.
@@ -117,8 +115,7 @@ Set to 0 to disable indicator."
 Applied to transcluded content in src block body.
 Used for detecting outdated content in future refresh functionality."
   :type 'symbol
-  :group 'org-transclusion-blocks
-  )
+  :group 'org-transclusion-blocks)
 
 (defcustom org-transclusion-blocks-show-interaction-warnings t
   "Whether to show warnings for component interactions.
@@ -134,6 +131,28 @@ Warnings appear in *Warnings* buffer and echo area."
   :type 'boolean
   :group 'org-transclusion-blocks
   :package-version '(org-transclusion-blocks . "0.2.0"))
+
+(defcustom org-transclusion-blocks-escape-org-sources t
+  "Whether to escape Org syntax when transcluding from Org files.
+
+When non-nil (recommended), automatically escapes content transcluded
+from links targeting Org files (file: links with .org extension,
+id: links, etc.).
+
+This prevents Org markup in source content from breaking src block
+structure:
+  - Headlines (*, **, etc.)
+  - Keywords (#+BEGIN, #+PROPERTY, etc.)
+  - Markup characters that start lines
+
+When nil, content is inserted verbatim. Use :transclude-escape-org
+header to override per-block.
+
+Does not affect non-Org sources (Python files, text files, etc.)."
+  :type 'boolean
+  :group 'org-transclusion-blocks
+  :package-version '(org-transclusion-blocks . "0.2.0"))
+
 ;;;; Internal Variables
 
 (defvar org-transclusion-blocks--last-fetch-time nil
@@ -275,6 +294,7 @@ Signals error for hard conflicts or missing requirements."
                                         (plist-get (plist-get component-spec conflict) :header))))
 
     (nreverse warnings)))
+
 ;;;; Error Formatting Utilities
 
 (defun org-transclusion-blocks-format-validation-error (header-key problem value &rest fix-options)
@@ -290,6 +310,7 @@ FIX-OPTIONS are strings describing how to fix (one per line)."
              (mapconcat (lambda (fix) (concat "     " fix))
                         fix-options
                         "\n")))))
+
 ;;;; Header Parsing
 
 (defun org-transclusion-blocks--get-property-headers (element)
@@ -372,6 +393,52 @@ Returns alist of (KEYWORD . VALUE) pairs."
     t))
 
 ;;;; Block Type Support
+(defun org-transclusion-blocks--source-is-org-p (link-string)
+  "Return non-nil if LINK-STRING targets Org content.
+
+Detects:
+- file: links with .org extension
+- id: links (always Org)
+- Custom ID links (always Org)
+- Org headline links"
+  (when (stringp link-string)
+    (or
+     ;; file:path.org or file:path.org::search
+     (string-match-p (rx "[[file:" (* any) ".org" (or "::" "]]")) link-string)
+
+     ;; id: links
+     (string-match-p (rx "[[id:") link-string)
+
+     ;; Custom ID links
+     (string-match-p (rx "[[#") link-string)
+
+     ;; Headline search in any file (heuristic)
+     (string-match-p (rx "::" (* space) "*") link-string))))
+
+(defun org-transclusion-blocks--should-escape-p (keyword-plist params)
+  "Determine if content should be escaped.
+
+Checks in priority order:
+1. Explicit :transclude-escape-org header
+2. Source file type (via `org-transclusion-blocks-escape-org-sources')
+3. Default to nil
+
+KEYWORD-PLIST contains :link property with link string.
+PARAMS is alist of header arguments."
+  (let ((explicit (assoc-default :transclude-escape-org params))
+        (link-string (plist-get keyword-plist :link)))
+    (cond
+     ;; 1. Explicit header overrides everything
+     ((and explicit (not (string-empty-p explicit)))
+      (not (member explicit '("nil" "no" "false" "0"))))
+
+     ;; 2. Check source type
+     ((and org-transclusion-blocks-escape-org-sources
+           (org-transclusion-blocks--source-is-org-p link-string))
+      t)
+
+     ;; 3. Default: no escaping
+     (t nil))))
 
 (defun org-transclusion-blocks--supported-block-p (element)
   "Return non-nil if ELEMENT is a block supporting transclusion.
@@ -421,6 +488,7 @@ For other blocks, directly replaces content region."
       (delete-region beg end)
       (goto-char beg)
       (insert content))))
+
 ;;;; Type Registry API
 
 (defun org-transclusion-blocks-register-type (type component-spec constructor)
@@ -619,74 +687,40 @@ Uses `org-link-make-string' for bracket wrapping and escaping."
             (expanded (org-link-expand-abbrev abbrev-link)))
        (org-link-make-string expanded nil)))))
 
+(defun org-transclusion-blocks--construct-transclude-line (params)
+  "Construct complete #+transclude: line from PARAMS.
+Returns string or nil."
+  (when-let ((link (org-transclusion-blocks--construct-link params)))
+    (let ((keywords (assoc-default :transclude-keywords params)))
+      (if keywords
+          (format "%s %s" link (org-strip-quotes keywords))
+        link))))
+
 (defun org-transclusion-blocks--params-to-plist (params lang)
   "Convert PARAMS alist to org-transclusion keyword plist.
+LANG currently unused."
+  (when-let ((transclude-line
+              (org-transclusion-blocks--construct-transclude-line params)))
+    (with-temp-buffer
+      (let ((org-inhibit-startup t))
+        (delay-mode-hooks (org-mode))
+        (insert "#+transclude: " transclude-line "\n")
+        (goto-char (point-min))
+        (let ((plist (org-transclusion-keyword-string-to-plist))
+              (escape-org (assoc-default :transclude-escape-org params)))
+          (when escape-org
+            (setq plist (plist-put plist :transclude-escape-org t)))
+          plist)))))
 
-PARAMS is alist of header arguments from `org-babel-get-src-block-info'.
-LANG is src block language string (currently unused).
 
-Constructs link from headers via `org-transclusion-blocks--construct-link',
-then extracts additional transclusion properties.
+;;;; Org Syntax Escaping
 
-Returns plist suitable for `org-transclusion-add-functions' or nil if
-link construction failed.
-
-Property mappings:
-  Constructed link           -> :link property
-  :transclude-thing VALUE    -> :thing-at-point property (with prefix)
-  :transclude-lines RANGE    -> :lines property
-
-The :thing-at-point value includes the property name prefix to match
-format expected by org-transclusion's payload functions.
-
-Example type-specific (with orgit-file registered):
-  Input:
-    ((:transclude-type . orgit-file)
-     (:orgit-repo . \"~/proj\")
-     (:orgit-rev . \"main\")
-     (:orgit-file . \"core.el\")
-     (:transclude-thing . sexp))
-  Output:
-    (:link \"[[orgit-file:~/proj::main::core.el]]\"
-     :thing-at-point \":thing-at-point sexp\")
-
-Example generic component:
-  Input:
-    ((:transclude-type . file)
-     (:transclude-path . \"/foo.el\")
-     (:transclude-search . \"defun bar\")
-     (:transclude-thing . sexp))
-  Output:
-    (:link \"[[file:/foo.el::defun bar]]\"
-     :thing-at-point \":thing-at-point sexp\")
-
-Example direct:
-  Input:
-    ((:transclude . \"[[file:/foo.el::defun bar]]\")
-     (:transclude-thing . sexp))
-  Output:
-    (:link \"[[file:/foo.el::defun bar]]\"
-     :thing-at-point \":thing-at-point sexp\")"
-  (when-let ((link (org-transclusion-blocks--construct-link params)))
-    (let ((thing (assoc-default :transclude-thing params))
-          (lines (assoc-default :transclude-lines params))
-          (plist (list :link link)))
-
-      ;; Add :thing-at-point with required prefix
-      ;; org-transclusion expects ":thing-at-point THING" format
-      (when thing
-        (let ((thing-str (org-strip-quotes
-                          (if (stringp thing) thing (format "%s" thing)))))
-          (setq plist (plist-put plist :thing-at-point
-                                 (format ":thing-at-point %s" thing-str)))))
-
-      ;; Add :lines if specified
-      (when lines
-        (let ((lines-str (org-strip-quotes
-                          (if (stringp lines) lines (format "%s" lines)))))
-          (setq plist (plist-put plist :lines lines-str))))
-
-      plist)))
+(defun org-transclusion-blocks--escape-org-syntax (content)
+  "Escape Org syntax in CONTENT string."
+  (with-temp-buffer
+    (insert content)
+    (org-escape-code-in-region (point-min) (point-max))
+    (buffer-string)))
 
 ;;;; Content Fetching
 
@@ -815,6 +849,11 @@ Returns t on success, nil if no headers or fetch failed."
             (if-let ((content (org-transclusion-blocks--fetch-content keyword-plist)))
                 (progn
                   (setq element (org-element-at-point))
+
+                  ;; Apply escaping if needed
+                  (when (org-transclusion-blocks--should-escape-p keyword-plist params)
+                    (setq content (org-transclusion-blocks--escape-org-syntax content)))
+
                   (org-transclusion-blocks--update-content element content)
                   (setq org-transclusion-blocks--last-fetch-time (current-time))
 
