@@ -473,6 +473,49 @@ Returns plist or nil if TYPE not registered."
       (when result result))))
 
 
+
+;;;; Mode Detection
+
+(defun org-transclusion-blocks--detect-mode (params)
+  "Determine which construction mode PARAMS represents.
+Returns one of: \\='direct, \\='type-specific, or nil."
+  (cond
+   ((assoc :transclude params) 'direct)
+   ((and (assoc :transclude-type params)
+         (alist-get (intern (cdr (assoc :transclude-type params)))
+                    org-transclusion-blocks--type-components))
+    'type-specific)
+   (t nil)))
+
+(defun org-transclusion-blocks--check-mode-compat (params)
+  "Warn if PARAMS mixes construction modes."
+  (when org-transclusion-blocks-show-interaction-warnings
+    (let ((mode (org-transclusion-blocks--detect-mode params)))
+      (pcase mode
+        ('direct
+         (when (assoc :transclude-type params)
+           (display-warning
+            'org-transclusion-blocks
+            ":transclude header takes priority; :transclude-type ignored"
+            :warning)))
+
+        ('type-specific
+         (let ((type-symbol (intern (cdr (assoc :transclude-type params)))))
+           (when (seq-some (lambda (pair)
+                             (let ((key (car pair)))
+                               (and (not (memq key '(:transclude-type :transclude-keywords)))
+                                    (string-prefix-p ":" (symbol-name key))
+                                    (not (cl-loop for (_ meta) on (alist-get type-symbol
+                                                                             org-transclusion-blocks--type-components)
+                                                  by #'cddr
+                                                  thereis (eq key (plist-get meta :header)))))))
+                           params)
+             (display-warning
+              'org-transclusion-blocks
+              (format "Type-specific mode active for %s; unrecognized component headers present"
+                      type-symbol)
+              :warning))))))))
+
 ;;;; Link Construction
 
 (defun org-transclusion-blocks--construct-link (params)
@@ -760,6 +803,9 @@ Returns t on success, nil if no headers or fetch failed."
 
                (keyword-plist (org-transclusion-blocks--params-to-plist params lang)))
 
+
+          ;; Check mode compatibility
+          (org-transclusion-blocks--check-mode-compat params)
 
           (if (not keyword-plist)
               (progn
