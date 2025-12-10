@@ -292,20 +292,49 @@ FIX-OPTIONS are strings describing how to fix (one per line)."
                         "\n")))))
 ;;;; Header Parsing
 
+(defun org-transclusion-blocks--get-property-headers (element)
+  "Extract header-args properties from ELEMENT's parent headline."
+  (let ((parent (org-element-property :parent element)))
+    (while (and parent (not (eq (org-element-type parent) 'headline)))
+      (setq parent (org-element-property :parent parent)))
+    (when parent
+      (org-element-property :HEADER-ARGS parent))))
+
+(defun org-transclusion-blocks--parse-headers-direct (element)
+  "Parse headers for non-Babel ELEMENT.
+Returns alist of (KEYWORD . VALUE) pairs."
+  (let ((headers nil)
+        (raw-headers (org-element-property :header element)))
+    (dolist (header-str raw-headers)
+      (when (string-match "^:\\([^ \t]+\\)\\(?:[ \t]+\\(.+\\)\\)?$" header-str)
+        (let ((key (intern (concat ":" (match-string 1 header-str))))
+              (val (or (match-string 2 header-str) "")))
+          (push (cons key val) headers))))
+    (when-let ((prop-headers (org-transclusion-blocks--get-property-headers element)))
+      (when (string-match "^:\\([^ \t]+\\)\\(?:[ \t]+\\(.+\\)\\)?$" prop-headers)
+        (push (cons (intern (concat ":" (match-string 1 prop-headers)))
+                    (or (match-string 2 prop-headers) ""))
+              headers)))
+    (nreverse headers)))
+
 (defun org-transclusion-blocks--has-typed-components-p (element)
   "Return non-nil if ELEMENT has :transclude-type header."
   (let ((raw-headers (org-element-property :header element))
-        (raw-params (org-element-property :parameters element)))
+        (raw-params (org-element-property :parameters element))
+        (property-headers (org-transclusion-blocks--get-property-headers element)))
     (or (and raw-params (string-match-p ":transclude-type" raw-params))
         (seq-some (lambda (h) (string-match-p ":transclude-type" h))
-                  raw-headers))))
+                  raw-headers)
+        (and property-headers (string-match-p ":transclude-type" property-headers)))))
 
 (defun org-transclusion-blocks--pre-validate-headers (element)
   "Pre-validate headers in ELEMENT using registered validators."
   (let* ((raw-headers (org-element-property :header element))
          (raw-params (org-element-property :parameters element))
+         (property-headers (org-transclusion-blocks--get-property-headers element))
          (all-header-strings (delq nil
                                    (append
+                                    (when property-headers (list property-headers))
                                     (when raw-params (list raw-params))
                                     raw-headers))))
     (let ((type-keyword nil)
@@ -341,6 +370,57 @@ FIX-OPTIONS are strings describing how to fix (one per line)."
                                                   "\n"))
                                :warning))))))
     t))
+
+;;;; Block Type Support
+
+(defun org-transclusion-blocks--supported-block-p (element)
+  "Return non-nil if ELEMENT is a block supporting transclusion.
+
+Supports any block with #+begin/#+end delimiters."
+  (let ((type (org-element-type element)))
+    (and (symbolp type)
+         (string-suffix-p "-block" (symbol-name type))
+         (not (string-prefix-p "inline-" (symbol-name type))))))
+
+(defun org-transclusion-blocks--get-content-bounds (element)
+  "Return (BEG . END) of content area for ELEMENT.
+
+For src-block, uses `org-src--contents-area'.
+For other blocks, calculates bounds from element properties."
+  (if (eq (org-element-type element) 'src-block)
+      (let ((area (org-src--contents-area element)))
+        (cons (nth 0 area) (nth 1 area)))
+    (save-excursion
+      (goto-char (org-element-property :begin element))
+      (while (looking-at "^[ \t]*#\\+HEADER:")
+        (forward-line))
+      (unless (looking-at "^[ \t]*#\\+begin_")
+        (error "Expected #+begin line at position %d" (point)))
+      (forward-line)
+      (let ((beg (point)))
+        (unless (re-search-forward "^[ \t]*#\\+end_" nil t)
+          (error "No matching #+end for block at position %d"
+                 (org-element-property :begin element)))
+        (forward-line 0)
+        (cons beg (point))))))
+
+(defun org-transclusion-blocks--update-content (element content)
+  "Replace ELEMENT's content with CONTENT string.
+
+For src-block, delegates to `org-babel-update-block-body'.
+For other blocks, directly replaces content region."
+  (if (eq (org-element-type element) 'src-block)
+      (org-babel-update-block-body content)
+    (let* ((bounds (org-transclusion-blocks--get-content-bounds element))
+           (beg (car bounds))
+           (end (cdr bounds)))
+      (unless (and beg end)
+        (error "Could not determine content bounds for %s at position %d"
+               (org-element-type element)
+               (org-element-property :begin element)))
+      (delete-region beg end)
+      (goto-char beg)
+      (insert content))))
 ;;;; Type Registry API
 
 (defun org-transclusion-blocks-register-type (type component-spec constructor)
@@ -391,6 +471,7 @@ Returns plist or nil if TYPE not registered."
                                            (if (stringp value) value
                                              (format "%s" value))))))
       (when result result))))
+
 
 ;;;; Link Construction
 
@@ -607,12 +688,12 @@ Used for future refresh detection to identify outdated content."
                              (current-time))))
 
 (defun org-transclusion-blocks--show-indicator (element)
-  "Display success indicator overlay on src-block ELEMENT.
+  "Display success indicator overlay on block ELEMENT.
 
 Shows checkmark for `org-transclusion-blocks-indicator-duration' seconds.
 Displays fetch timestamp in echo area if available.
 
-ELEMENT is org-element src-block context."
+ELEMENT is org-element block context."
   (when (> org-transclusion-blocks-indicator-duration 0)
     (let* ((beg (org-element-property :begin element))
            (end (save-excursion
@@ -637,136 +718,84 @@ ELEMENT is org-element src-block context."
 
 ;;;###autoload
 (defun org-transclusion-blocks-add ()
-  "Fetch and insert transcluded content into src block at point.
+  "Fetch and insert transcluded content into block at point.
 
-Parse headers via `org-babel-get-src-block-info', construct link
-from component headers, fetch content using org-transclusion payload
-machinery, insert into src block body via `org-babel-update-block-body'.
+Supports two mutually exclusive header forms:
 
-After activation:
-- Src block contains transcluded content
-- Content persists when saving file
-- Success indicator shown briefly
-- Fetch timestamp applied for future refresh detection
-- No transclusion overlays created
+1. Direct link mode:
+   #+HEADER: :transclude [[TYPE:PATH::SEARCH]]
+   #+HEADER: :transclude-keywords \":level 2\"  ; optional
 
-Point must be on or within src block with transclusion headers.
+2. Component mode (requires registered type):
+   #+HEADER: :transclude-type REGISTERED-TYPE
+   #+HEADER: :TYPE-COMPONENT-1 VALUE
+   #+HEADER: :TYPE-COMPONENT-2 VALUE
 
-Returns t on success, nil if no transclusion headers or fetch failed.
+See `org-transclusion-blocks-list-types' for available types.
 
-Header forms (in priority order):
+Point must be on or within a supported block type.
 
-1. Direct link form:
-   #+HEADER: :transclude [[file:path::search]]
-   #+begin_src elisp
-   #+end_src
-
-2. Type-specific component form (requires type registration):
-   #+HEADER: :transclude-type orgit-file
-   #+HEADER: :orgit-repo ~/code/project
-   #+HEADER: :orgit-rev main
-   #+HEADER: :orgit-file src/core.el
-   #+HEADER: :orgit-search defun process
-   #+begin_src elisp
-   #+end_src
-
-3. Generic component form:
-   #+HEADER: :transclude-type file
-   #+HEADER: :transclude-path /path/to/file
-   #+HEADER: :transclude-search search-term
-   #+begin_src elisp
-   #+end_src
-
-4. Abbreviation form:
-   #+HEADER: :transclude-abbrev gh
-   #+HEADER: :transclude-tag user/repo
-   #+begin_src elisp
-   #+end_src
-
-Additional properties (work with any form):
-   #+HEADER: :transclude-thing sexp
-   #+HEADER: :transclude-lines 10-20
-
-Implementation flow:
-1. Extract block info via `org-babel-get-src-block-info'
-2. Construct link via `org-transclusion-blocks--construct-link'
-3. Convert to keyword plist via `org-transclusion-blocks--params-to-plist'
-4. Fetch content via `org-transclusion-blocks--fetch-content'
-5. Insert via `org-babel-update-block-body' (handles indentation)
-6. Apply timestamp property for future refresh detection
-7. Display success indicator
-
-Uses Babel's native `org-babel-update-block-body' to ensure
-consistent indentation handling with org-src edit buffers."
+Returns t on success, nil if no headers or fetch failed."
   (interactive)
   (let* ((element (org-element-at-point))
          (type (org-element-type element)))
-    (if (not (eq type 'src-block))
+
+    (if (not (org-transclusion-blocks--supported-block-p element))
         (progn
-          (message "Not on src block")
+          (message "Not on a supported block (point on: %s)" type)
           nil)
+
       (save-excursion
         (goto-char (org-element-property :begin element))
 
-        ;;pre-validation step
         (when (org-transclusion-blocks--has-typed-components-p element)
           (org-transclusion-blocks--pre-validate-headers element))
 
-        (let* ((info (org-babel-get-src-block-info))
-               (lang (nth 0 info))
-               (params (nth 2 info))
+        (let* ((params (if (eq type 'src-block)
+                           (nth 2 (org-babel-get-src-block-info))
+                         (org-transclusion-blocks--parse-headers-direct element)))
+
+               (lang (when (eq type 'src-block)
+                       (nth 0 (org-babel-get-src-block-info))))
+
                (keyword-plist (org-transclusion-blocks--params-to-plist params lang)))
+
+
           (if (not keyword-plist)
               (progn
                 (message "No transclusion headers found")
                 nil)
+
             (if-let ((content (org-transclusion-blocks--fetch-content keyword-plist)))
                 (progn
-                  ;; Use Babel's body update for consistent indentation
-                  (org-babel-update-block-body content)
-
-                  ;; Record fetch time
+                  (setq element (org-element-at-point))
+                  (org-transclusion-blocks--update-content element content)
                   (setq org-transclusion-blocks--last-fetch-time (current-time))
 
-                  ;; Apply timestamp to inserted content
-                  (let* ((area (org-src--contents-area element))
-                         (beg (nth 0 area))
-                         (end (nth 1 area)))
+                  (setq element (org-element-at-point))
+                  (let* ((bounds (org-transclusion-blocks--get-content-bounds element))
+                         (beg (car bounds))
+                         (end (cdr bounds)))
                     (org-transclusion-blocks--apply-timestamp beg end))
 
-                  ;; Show success indicator
                   (org-transclusion-blocks--show-indicator element)
-
-                  (message "Transclusion content inserted into src block")
+                  (message "Transclusion content inserted into %s block" type)
                   t)
+
               (message "Failed to fetch transclusion content")
               nil)))))))
 
 ;;;###autoload
 (defun org-transclusion-blocks-add-all (&optional scope)
-  "Fetch and insert transcluded content for all blocks in SCOPE.
+  "Fetch and insert content for all blocks in SCOPE.
 
 SCOPE can be:
-  nil or 'buffer - entire buffer (default)
-  'subtree       - current subtree
-  'region        - active region
+  nil or \\='buffer - entire buffer (default)
+  \\='subtree       - current subtree
+  \\='region        - active region
 
-Iterates over src blocks via `org-babel-map-src-blocks',
-processes blocks with transclusion headers.
-
-Returns list of successfully processed block positions.
-
-Continues processing remaining blocks if individual fetch fails.
-Displays summary message with success/failure counts.
-
-Example usage:
-  (org-transclusion-blocks-add-all)          ; entire buffer
-  (org-transclusion-blocks-add-all 'subtree) ; current subtree
-  (org-transclusion-blocks-add-all 'region)  ; active region
-
-Each block is processed independently. Errors in one block do not
-halt processing of remaining blocks. Failed blocks are reported
-with position and error message in *Messages* buffer."
+Processes all supported block types with transclusion headers.
+Returns list of successfully processed block positions."
   (interactive)
   (let ((scope (or scope 'buffer))
         (success-count 0)
@@ -781,18 +810,24 @@ with position and error message in *Messages* buffer."
           ('region (when (use-region-p)
                      (narrow-to-region (region-beginning) (region-end)))))
 
-        (org-babel-map-src-blocks nil
-          ;; beg-block is bound by org-babel-map-src-blocks
-          (goto-char beg-block)
-          (condition-case err
-              (when (org-transclusion-blocks-add)
-                (push (point) processed-positions)
-                (cl-incf success-count))
-            (error
-             (cl-incf failure-count)
-             (message "Error at block line %d: %s"
-                      (line-number-at-pos)
-                      (error-message-string err)))))))
+        (org-element-map (org-element-parse-buffer)
+            '(src-block quote-block example-block export-block special-block
+              verse-block center-block comment-block)
+          (lambda (element)
+            (when (or (org-transclusion-blocks--has-typed-components-p element)
+                      (let ((raw-headers (org-element-property :header element)))
+                        (seq-some (lambda (h) (string-match-p ":transclude" h))
+                                  raw-headers)))
+              (goto-char (org-element-property :begin element))
+              (condition-case err
+                  (when (org-transclusion-blocks-add)
+                    (push (point) processed-positions)
+                    (cl-incf success-count))
+                (error
+                 (cl-incf failure-count)
+                 (message "Error at block line %d: %s"
+                          (line-number-at-pos)
+                          (error-message-string err)))))))))
 
     (message "Processed %d block%s (%d succeeded, %d failed)"
              (+ success-count failure-count)
