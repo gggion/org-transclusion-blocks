@@ -100,7 +100,7 @@
 (defgroup org-transclusion-blocks nil
   "Transclude content into Org src blocks via headers."
   :group 'org-transclusion
-  :prefix "org-transclusion-blocks-")
+  )
 
 (defcustom org-transclusion-blocks-indicator-duration 2.0
   "Seconds to display success indicator after content update.
@@ -109,7 +109,7 @@ Shows checkmark overlay on updated src block for this duration.
 Set to 0 to disable indicator."
   :type 'number
   :group 'org-transclusion-blocks
-  :package-version '(org-transclusion-blocks . "0.1.0"))
+  )
 
 (defcustom org-transclusion-blocks-timestamp-property 'org-transclusion-blocks-fetched
   "Text property name for storing fetch timestamp.
@@ -118,8 +118,22 @@ Applied to transcluded content in src block body.
 Used for detecting outdated content in future refresh functionality."
   :type 'symbol
   :group 'org-transclusion-blocks
-  :package-version '(org-transclusion-blocks . "0.1.0"))
+  )
 
+(defcustom org-transclusion-blocks-show-interaction-warnings t
+  "Whether to show warnings for component interactions.
+
+When non-nil, display warnings for:
+- Shadowed components
+- Mode conflicts (mixed header forms)
+- Soft conflicts
+
+When nil, only hard conflicts (requirements, mutual exclusions) cause errors.
+
+Warnings appear in *Warnings* buffer and echo area."
+  :type 'boolean
+  :group 'org-transclusion-blocks
+  :package-version '(org-transclusion-blocks . "0.2.0"))
 ;;;; Internal Variables
 
 (defvar org-transclusion-blocks--last-fetch-time nil
@@ -128,27 +142,20 @@ Buffer-local. Used by indicator to display fetch time.")
 (make-variable-buffer-local 'org-transclusion-blocks--last-fetch-time)
 
 (defvar org-transclusion-blocks--type-components nil
-  "Alist mapping link types to component header specifications.
+  "Alist mapping link types to component specifications.
 
-Each entry has form (TYPE . COMPONENT-PLIST).
+Each entry: (TYPE . COMPONENT-SPEC)
 
-COMPONENT-PLIST maps semantic component names (keywords) to
-actual header argument keywords used in src block headers.
-
-Example entry:
-  (orgit-file . (:repo :orgit-repo
-                 :rev :orgit-rev
-                 :file :orgit-file
-                 :search :orgit-search))
-
-This maps orgit-file's semantic components to specific headers:
-- :repo component comes from :orgit-repo header
-- :rev component comes from :orgit-rev header
-- :file component comes from :orgit-file header
-- :search component comes from :orgit-search header
+COMPONENT-SPEC is plist:
+  (:semantic-name (:header :header-keyword
+                   :validator FUNCTION-OR-NIL
+                   :required BOOLEAN-OR-NIL
+                   :shadowed-by LIST-OR-NIL
+                   :requires LIST-OR-NIL
+                   :conflicts LIST-OR-NIL) ...)
 
 Populated via `org-transclusion-blocks-register-type'.
-Queried by `org-transclusion-blocks--extract-type-components'.")
+Queried by validation and extraction functions.")
 
 (defvar org-transclusion-blocks--type-constructors nil
   "Alist mapping link types to constructor functions.
@@ -171,68 +178,198 @@ Where orgit-file--construct-link is:
 Populated via `org-transclusion-blocks-register-type'.
 Queried by `org-transclusion-blocks--construct-link'.")
 
+;;;; Validator Composition Utilities
+
+(defun org-transclusion-blocks-make-non-empty-validator (component-description)
+  "Return validator requiring non-empty string.
+COMPONENT-DESCRIPTION is string like \"repository path\" for error messages."
+  (lambda (value header-key _type)
+    (if (or (not (stringp value))
+            (string-empty-p value))
+        (user-error "Header %s: %s cannot be empty"
+                    header-key component-description)
+      value)))
+
+(defun org-transclusion-blocks-make-regexp-validator (pattern component-description)
+  "Return validator checking VALUE matches PATTERN.
+COMPONENT-DESCRIPTION is string like \"git revision\" for error messages."
+  (lambda (value header-key _type)
+    (unless (string-match-p pattern value)
+      (user-error "Header %s: %s must match pattern %s, got: %S"
+                  header-key component-description pattern value))
+    value))
+
+(defun org-transclusion-blocks-make-predicate-validator (predicate component-description)
+  "Return validator using PREDICATE function.
+PREDICATE receives VALUE and returns non-nil if valid.
+COMPONENT-DESCRIPTION is string for error messages."
+  (lambda (value header-key _type)
+    (unless (funcall predicate value)
+      (user-error "Header %s: invalid %s: %S"
+                  header-key component-description value))
+    value))
+
+(defun org-transclusion-blocks-compose-validators (&rest validators)
+  "Return validator that applies VALIDATORS in sequence.
+Composition stops at first error."
+  (lambda (value header-key type)
+    (dolist (validator validators value)
+      (setq value (funcall validator value header-key type)))))
+
+
+;;;; Interaction Checking
+
+(defun org-transclusion-blocks--check-interactions (type params component-spec)
+  "Check component interactions, emit warnings/errors.
+TYPE is link type symbol.
+PARAMS is alist from header parsing.
+COMPONENT-SPEC is plist of component metadata.
+
+Returns list of warning strings (empty if no issues).
+Signals error for hard conflicts or missing requirements."
+  (let ((warnings nil)
+        (present-components
+         (cl-loop for (key meta) on component-spec by #'cddr
+                  for header = (plist-get meta :header)
+                  when (assoc header params)
+                  collect key)))
+
+    ;; Check required components
+    (cl-loop for (key meta) on component-spec by #'cddr
+             when (plist-get meta :required)
+             unless (memq key present-components)
+             do (user-error "Type %s: required component %s (header %s) is missing"
+                            type key (plist-get meta :header)))
+
+    ;; Check shadowing relationships
+    (cl-loop for (key meta) on component-spec by #'cddr
+             when (memq key present-components)
+             for shadowed-by = (plist-get meta :shadowed-by)
+             when shadowed-by
+             do (cl-loop for shadow in shadowed-by
+                         when (assoc shadow params)
+                         do (push (format "Header %s shadows %s; latter will be ignored"
+                                          shadow (plist-get meta :header))
+                                  warnings)))
+
+    ;; Check dependencies
+    (cl-loop for (key meta) on component-spec by #'cddr
+             when (memq key present-components)
+             for requires = (plist-get meta :requires)
+             when requires
+             do (cl-loop for req in requires
+                         unless (memq req present-components)
+                         do (user-error "Component %s requires %s to be present"
+                                        (plist-get meta :header)
+                                        (plist-get (plist-get component-spec req) :header))))
+
+    ;; Check hard conflicts
+    (cl-loop for (key meta) on component-spec by #'cddr
+             when (memq key present-components)
+             for conflicts = (plist-get meta :conflicts)
+             when conflicts
+             do (cl-loop for conflict in conflicts
+                         when (memq conflict present-components)
+                         do (user-error "Components %s and %s cannot be used together"
+                                        (plist-get meta :header)
+                                        (plist-get (plist-get component-spec conflict) :header))))
+
+    (nreverse warnings)))
+;;;; Error Formatting Utilities
+
+(defun org-transclusion-blocks-format-validation-error (header-key problem value &rest fix-options)
+  "Format validation error message consistently.
+HEADER-KEY identifies which header failed.
+PROBLEM is string describing what's wrong.
+VALUE is the problematic input.
+FIX-OPTIONS are strings describing how to fix (one per line)."
+  (concat
+   (format "Header %s: %s\n\nValue: %S\n\n" header-key problem value)
+   (when fix-options
+     (concat "Fix:\n"
+             (mapconcat (lambda (fix) (concat "     " fix))
+                        fix-options
+                        "\n")))))
+;;;; Header Parsing
+
+(defun org-transclusion-blocks--has-typed-components-p (element)
+  "Return non-nil if ELEMENT has :transclude-type header."
+  (let ((raw-headers (org-element-property :header element))
+        (raw-params (org-element-property :parameters element)))
+    (or (and raw-params (string-match-p ":transclude-type" raw-params))
+        (seq-some (lambda (h) (string-match-p ":transclude-type" h))
+                  raw-headers))))
+
+(defun org-transclusion-blocks--pre-validate-headers (element)
+  "Pre-validate headers in ELEMENT using registered validators."
+  (let* ((raw-headers (org-element-property :header element))
+         (raw-params (org-element-property :parameters element))
+         (all-header-strings (delq nil
+                                   (append
+                                    (when raw-params (list raw-params))
+                                    raw-headers))))
+    (let ((type-keyword nil)
+          (parsed-params nil))
+      (dolist (header-str all-header-strings)
+        (when (string-match ":transclude-type[ \t]+\\([^ \t\n]+\\)" header-str)
+          (setq type-keyword (intern (match-string 1 header-str)))))
+      (when-let ((component-spec (alist-get type-keyword
+                                            org-transclusion-blocks--type-components)))
+        (let ((header-validators (make-hash-table :test 'eq)))
+          (cl-loop for (semantic-key meta) on component-spec by #'cddr
+                   for header-key = (plist-get meta :header)
+                   for validator = (plist-get meta :validator)
+                   when validator
+                   do (puthash header-key validator header-validators))
+          (dolist (header-str all-header-strings)
+            (when (string-match "^:\\([^ \t]+\\)\\(?:[ \t]+\\(.+\\)\\)?$" header-str)
+              (let* ((key (intern (concat ":" (match-string 1 header-str))))
+                     (val (or (match-string 2 header-str) ""))
+                     (validator (gethash key header-validators)))
+                (push (cons key val) parsed-params)
+                (when validator
+                  (funcall validator val key type-keyword)))))
+          (when-let ((warnings (org-transclusion-blocks--check-interactions
+                                type-keyword
+                                parsed-params
+                                component-spec)))
+            (when org-transclusion-blocks-show-interaction-warnings
+              (display-warning 'org-transclusion-blocks
+                               (concat "Component interaction issues:\n"
+                                       (mapconcat (lambda (w) (concat "  • " w))
+                                                  warnings
+                                                  "\n"))
+                               :warning))))))
+    t))
 ;;;; Type Registry API
 
 (defun org-transclusion-blocks-register-type (type component-spec constructor)
   "Register link TYPE with COMPONENT-SPEC and CONSTRUCTOR.
 
-TYPE is symbol naming the link type (e.g., \\='orgit-file, \\='file).
+TYPE is symbol naming link type (e.g., \\='my-link).
 
-COMPONENT-SPEC is plist mapping semantic component names to
-header argument keywords:
-  (:semantic-name :header-keyword ...)
+COMPONENT-SPEC is plist mapping semantic component names to metadata:
+  (:semantic-name (:header :header-keyword
+                   :validator FUNCTION-OR-NIL
+                   :required BOOLEAN-OR-NIL
+                   :shadowed-by LIST-OR-NIL
+                   :requires LIST-OR-NIL
+                   :conflicts LIST-OR-NIL) ...)
 
-Semantic names are used in constructor function.
-Header keywords are actual Babel header arguments.
+CONSTRUCTOR receives plist of validated components,
+returns raw link string (without [[ ]] brackets).
 
-CONSTRUCTOR is function receiving components plist, returning
-raw link string (without [[ ]] brackets).
+Example:
 
-Constructor signature:
-  (lambda (components-plist) ...) -> string
-
-Constructor receives plist where keys are semantic component names
-from COMPONENT-SPEC, values are extracted from corresponding headers.
-
-Example registration for orgit-file:
   (org-transclusion-blocks-register-type
-   \\='orgit-file
-   \\='(:repo :orgit-repo
-     :rev :orgit-rev
-     :file :orgit-file
-     :search :orgit-search)
+   \\='my-type
+   \\='(:path (:header :my-path
+              :validator my-validator-fn
+              :required t))
    (lambda (components)
-     (let ((repo (plist-get components :repo))
-           (rev (plist-get components :rev))
-           (file (plist-get components :file))
-           (search (plist-get components :search)))
-       (if search
-           (format \"orgit-file:%s::%s::%s::%s\" repo rev file search)
-         (format \"orgit-file:%s::%s::%s\" repo rev file)))))
+     (format \"my-type:%s\" (plist-get components :path))))
 
-After registration, these headers work:
-  #+HEADER: :transclude-type orgit-file
-  #+HEADER: :orgit-repo ~/code/project
-  #+HEADER: :orgit-rev main
-  #+HEADER: :orgit-file src/core.el
-  #+HEADER: :orgit-search defun process
-
-Component extraction maps:
-  :orgit-repo value -> :repo in components plist
-  :orgit-rev value -> :rev in components plist
-  etc.
-
-Constructor receives:
-  (:repo \"~/code/project\"
-   :rev \"main\"
-   :file \"src/core.el\"
-   :search \"defun process\")
-
-Returns:
-  \"orgit-file:~/code/project::main::src/core.el::defun process\"
-
-Overwrites existing registration for TYPE if present.
-
+Overwrites existing TYPE registration if present.
 Returns TYPE symbol."
   (setf (alist-get type org-transclusion-blocks--type-components)
         component-spec)
@@ -241,44 +378,12 @@ Returns TYPE symbol."
   type)
 
 (defun org-transclusion-blocks--extract-type-components (type params)
-  "Extract components for TYPE from PARAMS using registry.
-
-TYPE is symbol naming registered link type.
-PARAMS is alist from `org-babel-get-src-block-info'.
-
-Uses `org-transclusion-blocks--type-components' registry to map
-header arguments to semantic component names.
-
-Returns plist mapping semantic component names to extracted values,
-or nil if TYPE not registered or no components found.
-
-Example:
-  TYPE: orgit-file
-  Registry entry:
-    (orgit-file . (:repo :orgit-repo
-                   :rev :orgit-rev
-                   :file :orgit-file
-                   :search :orgit-search))
-
-  PARAMS:
-    ((:orgit-repo . \"~/code/proj\")
-     (:orgit-rev . \"main\")
-     (:orgit-file . \"core.el\")
-     (:orgit-search . \"defun process\"))
-
-  Returns:
-    (:repo \"~/code/proj\"
-     :rev \"main\"
-     :file \"core.el\"
-     :search \"defun process\")
-
-Values are stripped of quotes and converted to strings if needed.
-
-Used internally by `org-transclusion-blocks--construct-link' to
-prepare components for constructor function."
+  "Extract components for TYPE from PARAMS.
+Returns plist or nil if TYPE not registered."
   (when-let ((component-spec (alist-get type org-transclusion-blocks--type-components)))
     (let ((result nil))
-      (cl-loop for (semantic-key header-key) on component-spec by #'cddr
+      (cl-loop for (semantic-key meta) on component-spec by #'cddr
+               for header-key = (plist-get meta :header)
                for value = (assoc-default header-key params)
                when value
                do (setq result (plist-put result semantic-key
@@ -602,6 +707,11 @@ consistent indentation handling with org-src edit buffers."
           nil)
       (save-excursion
         (goto-char (org-element-property :begin element))
+
+        ;;pre-validation step
+        (when (org-transclusion-blocks--has-typed-components-p element)
+          (org-transclusion-blocks--pre-validate-headers element))
+
         (let* ((info (org-babel-get-src-block-info))
                (lang (nth 0 info))
                (params (nth 2 info))
