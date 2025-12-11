@@ -1,0 +1,22 @@
+Sample Text File
+Line 2: First data point
+Line 3: Second data point
+Line 4: Third data point
+Line 5: Fourth data point
+Line 6: Fifth data point
+Line 7: Sixth data point
+Line 8: Seventh data point
+Line 9: Eighth data point
+Line 10: Ninth data point
+Line 11: Tenth data point
+Line 12: Eleventh data point
+Line 13: Twelfth data point
+Line 14: Thirteenth data point
+Line 15: Fourteenth data point
+Line 16: Fifteenth data point
+Line 17: Sixteenth data point
+Line 18: Seventeenth data point
+Line 19: Eighteenth data point
+Line 20: Nineteenth data point
+Line 21: Twentieth data point
+Line 22: End of sample data

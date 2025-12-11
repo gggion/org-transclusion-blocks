@@ -1,0 +1,1382 @@
+#+title: org-transclusion-blocks - /Transclusion into Org blocks via header arguments/
+
+org-transclusion-blocks enables transclusion into any Org block (src, quote,
+example, export, etc.) using header arguments, similar to how Babel uses headers
+for code execution (=:session=, =:results=, =:var=). Content fetched via
+[[https://github.com/nobiot/org-transclusion][org-transclusion]] persists in the buffer file, similarly to using
+~org-transclusion-detach~
+
+* Contents :noexport:
+:PROPERTIES:
+:TOC:      :include siblings :depth 1 :ignore this
+:END:
+:CONTENTS:
+- [[#core-capability-headers-for-transclusion][Core Capability: Headers for Transclusion]]
+- [[#advanced-capability-component-based-links][Advanced Capability: Component-Based Links]]
+- [[#features][Features]]
+- [[#installation][Installation]]
+- [[#quick-start][Quick Start]]
+- [[#why-header-based-transclusion][Why Header-Based Transclusion?]]
+- [[#default-headers-no-configuration-required][Default Headers (No Configuration Required)]]
+- [[#block-types][Block Types]]
+- [[#component-based-links-advanced][Component-Based Links (Advanced)]]
+- [[#commands][Commands]]
+- [[#configuration][Configuration]]
+- [[#integration-with-org-transclusion][Integration with org-transclusion]]
+- [[#package-ecosystem][Package Ecosystem]]
+- [[#troubleshooting][Troubleshooting]]
+- [[#comparison-with-alternatives][Comparison with Alternatives]]
+- [[#resources][Resources]]
+- [[#acknowledgments][Acknowledgments]]
+- [[#license][License]]
+:END:
+  
+
+* Core Capability: Headers for Transclusion
+:PROPERTIES:
+:CUSTOM_ID: core-capability-headers-for-transclusion
+:END:
+
+org-transclusion uses =#+transclude:= keywords. This package uses block headers:
+
+Before (org-transclusion):
+#+begin_src org
+#+transclude: [[file:org-transclusion-blocks.el]] :src elisp :lines 869-949
+#+end_src
+
+After (org-transclusion-blocks):
+#+begin_src org
+,#+HEADER: :transclude [[file:org-transclusion-blocks.el]]
+,#+HEADER: :transclude-keywords ":lines 869-949"
+,#+begin_src elisp
+,#+end_src
+#+end_src
+
+
+The header approach enables:
+- /Property inheritance/: Set =:transclude= once in property drawer, inherit in all subtree blocks
+- /Babel integration/: Combine transclusion with =:session=, =:results=, =:exports= in src blocks
+- /Persistent content/: Transcluded text remains in buffer file as if detached.
+- /Block type flexibility/: Use quote, example, export, or custom special blocks
+- /Org syntax escaping/: Automatic escaping prevents markup in transcluded Org content from breaking src blocks
+* Advanced Capability: Component-Based Links
+:PROPERTIES:
+:CUSTOM_ID: advanced-capability-component-based-links
+:END:
+
+For complex links or when validation is desired, decompose into semantic components.
+
+** Basic Example: File Link with Search Option
+
+Org's built-in =file:= link type supports search options (=::*Heading=, =::#custom-id=).
+Decompose into components with validation:
+
+#+begin_src elisp
+(org-transclusion-blocks-register-type
+ ;; transclusion-type
+ 'file-with-search                        
+
+ ;; components 
+ '(:path (:header :file-path
+          :required t
+          :validator ,(org-transclusion-blocks-compose-validators
+                       (org-transclusion-blocks-make-non-empty-validator "file path")
+                       (org-transclusion-blocks-make-predicate-validator
+                        #'file-exists-p "file path")))
+   :search (:header :file-search))
+
+ ;;constructor 
+ (lambda (components)
+   (let ((path (plist-get components :path))
+         (search (plist-get components :search)))
+     (if search
+         (format "file:%s::%s" path search)
+       (format "file:%s" path)))))
+#+end_src
+
+This registration:
+- Uses =org-transclusion-blocks-compose-validators= to chain two validators
+- =make-non-empty-validator= catches empty paths
+- =make-predicate-validator= checks file existence via =file-exists-p=
+- Constructor formats standard =file:PATH::SEARCH= link
+
+Usage:
+
+#+begin_src org
+,#+HEADER: :transclude-type file-with-search
+,#+HEADER: :file-path ~/documents/notes.org
+,#+HEADER: :file-search *Research
+,#+begin_src org
+,#+end_src
+#+end_src
+
+Validation catches errors early:
+
+#+begin_example
+Header :file-path: invalid file path: "~/nonexistent.org"
+#+end_example
+
+Without validation, the error occurs during fetch with less helpful message:
+"Failed to fetch transclusion content".
+
+** Intermediate Example: Adding Interaction Constraints
+
+Extend the file example with shadowing relationship:
+
+#+begin_src elisp
+(org-transclusion-blocks-register-type
+ ;;transclusion-type
+ 'file-with-search
+
+ ;; components
+ '(:path (:header :file-path
+          :required t
+          ;; defining validators
+          :validator ,(org-transclusion-blocks-compose-validators 
+                       (org-transclusion-blocks-make-non-empty-validator "file path")
+                       (org-transclusion-blocks-make-predicate-validator
+                        #'file-exists-p "file path")))
+   :search (:header :file-search
+            ;; defining  header incompatibility between :lines and :thing-at-point
+            :shadowed-by (:transclude-lines :transclude-thing))) ;;defining 
+
+ ;; constructor
+ (lambda (components)
+   (let ((path (plist-get components :path))
+         (search (plist-get components :search)))
+     (if search
+         (format "file:%s::%s" path search)
+       (format "file:%s" path)))))
+#+end_src
+
+
+Now using both =:file-search= and =:transclude-lines= produces warning:
+
+#+begin_src org
+,#+HEADER: :transclude-type file-with-search
+,#+HEADER: :file-path ~/notes.org
+,#+HEADER: :file-search *Heading
+,#+HEADER: :transclude-lines 10-20
+#+end_src
+
+Warning:
+#+begin_example
+Header :transclude-lines shadows :file-search; latter will be ignored
+#+end_example
+
+The =:shadowed-by= declaration makes the relationship explicit. User discovers
+why their search doesn't work /before/ debugging.
+
+** Advanced example: 
+
+- custom validators and constructors: already possible but figuring out how to
+  explain clearly. you can look at the raw code for it in [[file:testing/lisp/test-orgit-file-type.el][HERE]]
+
+* Features
+:PROPERTIES:
+:CUSTOM_ID: features
+:END:
+
+- /Direct header transclusion/: Use =:transclude= header in any block without configuration
+- /Property inheritance/: Set headers in property drawer, inherit in subtree blocks
+- /Persistent content/: Transcluded text saved to file, works with version control and offline
+- /Block type support/: Works with src, quote, example, export, verse, center, comment, and custom special blocks
+- /Org syntax escaping/: Automatic escaping for Org sources prevents headline/keyword collisions in src blocks
+- /Component decomposition/: Break complex links into validated semantic headers (requires registration)
+- /Pre-validation/: Catch errors before content fetch with component-specific messages
+- /Interaction constraints/: Declare required components, shadowing, dependencies, conflicts
+- /Validator composition/: Utilities for common patterns (non-empty, regexp, predicate)
+- /Babel integration/: Full compatibility with =:session=, =:results=, =:var=, =:exports= in src blocks
+- /Introspection/: Commands to discover types, inspect configurations, validate without fetching
+
+* Installation
+:PROPERTIES:
+:CUSTOM_ID: installation
+:END:
+** Manual
+
+#+begin_src elisp
+(add-to-list 'load-path "/path/to/org-transclusion-blocks")
+(require 'org-transclusion-blocks)
+#+end_src
+
+* Quick Start
+:PROPERTIES:
+:CUSTOM_ID: quick-start
+:END:
+** Basic Transclusion via Header
+
+Add =:transclude= header to any block:
+
+#+begin_src org
+#+HEADER: :transclude [[file:~/documents/notes.org::*Research]]
+#+begin_src org
+#+end_src
+#+end_src
+
+Run =M-x org-transclusion-blocks-add=. Content from target appears in block body:
+
+#+begin_src org
+,#+HEADER: :transclude [[file:~/documents/notes.org::*Research]]
+,#+begin_src org
+,* Research
+
+Prior work in this area shows...
+,#+end_src
+#+end_src
+
+Content persists in file. Version control sees it. Works offline.
+
+** Pass Keywords to org-transclusion
+
+Use =:transclude-keywords= to pass org-transclusion options:
+
+#+begin_src org
+,#+HEADER: :transclude [[file:~/notes.org::*Heading]]
+,#+HEADER: :transclude-keywords ":only-contents :lines 1-10"
+,#+begin_src org
+,#+end_src
+#+end_src
+
+This passes =:only-contents :lines 1-10= to org-transclusion. 
+
+#+begin_quote
+[!WARNING]
+Some org-transclusion keywords don't work as intented at the moment (=:level=, =:exclude-elements=).
+#+end_quote
+
+** Inherit Headers via Properties
+
+Set =:transclude= once, inherit in subtree:
+
+#+begin_src org
+,* Research Notes
+:PROPERTIES:
+:header-args: :transclude [[file:~/research.org]]
+:END:
+
+,** Introduction Section
+,#+HEADER: :transclude-keywords ":only-contents :lines 1-5"
+,#+begin_src org
+,#+end_src
+
+,* Literature Review Section
+,#+HEADER: :transclude-keywords ":only-contents :lines 10-15"
+,#+begin_src org
+,#+end_src
+#+end_src
+
+Both blocks inherit =:transclude= from property drawer. Each adds
+=:transclude-keywords= to filter differently.
+
+** Automatic Org Syntax Escaping
+
+When transcluding from Org files into src blocks, markup is escaped automatically:
+
+Source file (=notes.org=):
+#+begin_src org
+,* Heading in source
+,** Sub-heading
+,#+KEYWORD: value
+Regular text.
+#+end_src
+
+After transclusion into src block:
+#+begin_src org
+,#+HEADER: :transclude [[file:notes.org::*Heading in source]]
+,#+begin_src org
+,,* Heading in source
+,,** Sub-heading
+,,#+KEYWORD: value
+Regular text.
+#+end_src
+#+end_src
+
+Notice the commas before =*= and =#+= characters. This prevents Org from
+interpreting them as markup. Without escaping, the =#+KEYWORD= line would close
+the src block prematurely.
+
+Escaping is enabled by default for Org sources (file: links to .org files, id:
+links, etc.). Control per-block with =:transclude-escape-org=:
+
+#+begin_src org
+,#+HEADER: :transclude [[file:notes.org]]
+,#+HEADER: :transclude-escape-org nil
+,#+begin_src org
+,#+end_src
+#+end_src
+
+Or disable globally:
+
+#+begin_src elisp
+(setq org-transclusion-blocks-escape-org-sources nil)
+#+end_src
+
+Non-Org sources (Python, text files, etc.) are never escaped automatically. If
+for example a markdown file or docstring contains ~*~ or other elements which can be
+interpreted as org elements, you can escape them by using ~:transclude-escape-org t~.
+
+* Why Header-Based Transclusion?
+:PROPERTIES:
+:CUSTOM_ID: why-header-based-transclusion
+:END:
+** Problem 1: org-transclusion does not persist source block headers
+
+org-transclusion uses =#+transclude:= keywords that exist outside block structure,
+while the transcluded content is being displayed, the ~transclude~ keyword
+dissapears:
+
+#+begin_src org
+,#+transclude: [[file:file-name.el]] :src elisp :lines 10-15
+<content appears, original keyword dissapears>
+#+end_src
+
+This creates issues:
+- /No property inheritance/: Can't set common values in property drawer
+- /No Babel integration/: Can't combine with =:session=, =:results= in src blocks
+- /Volatile content/: the source block disappears when transclusion is inactive (unless detached)
+- /Version control blind/: Content not saved to file (unless detached)
+
+*** Solution: headers integrate with org infrastructure
+
+Headers work with Org's existing systems:
+
+Property inheritance:
+#+begin_src org
+:PROPERTIES:
+:header-args: :transclude [[file:~/research.org]]
+:END:
+#+end_src
+
+Babel integration:
+#+begin_src org
+Csv data excerpt:
+,#+HEADER: :transclude [[file:data.csv]]
+,#+HEADER: :transclude-keywords ":lines 1-10"
+,#+begin_src :results silent :exports both
+,#+end_src
+
+,#+HEADER: :results silent :exports both
+,#+begin_src python :session analysis
+import pandas as pd
+data = pd.read_csv('data.csv')
+,#+end_src
+#+end_src
+
+Persistent content (saved to file):
+#+begin_src org
+,#+HEADER: :transclude [[file:notes.org]]
+,#+begin_src org
+Content remains here when transclusion inactive.
+Version control sees it.
+,#+end_src
+#+end_src
+
+** Problem 2: complex links are unreadable or hard to manage
+
+Consider [[https://github.com/gggion/orgit-file][orgit-file]] transclusion links for Git repository content:
+
+: #+transclude: [[orgit-file:/home/user/code/project::refs/heads/main::src/core.el::(defun process-data]] :src elisp :thing-at-point sexp
+
+Basic sepparation into headers, while offering some respite, still lacks the ideal form for easier management:
+#+begin_src org
+,#+HEADER: :transclude [[orgit-file:/home/user/code/project::refs/heads/main::src/core.el::(defun process-data]]
+,#+HEADER: :transclude-keywords ":thing-at-point sexp"
+,#+begin_src elisp
+,#+end_src
+#+end_src
+
+Issues:
+- Difficult to read (all components concatenated)
+- Hard to modify (must reconstruct entire link)
+- Error-prone (typos in revision, file path)
+- No validation (errors discovered during fetch, not before)
+
+*** Solution: Component Decomposition with Validation
+With the ~transclude-type~ constructor utilities, we can create headers for this
+specific transclusion link type:
+
+#+begin_src org
+,#+HEADER: :transclude-type orgit-file
+,#+HEADER: :orgit-repo ~/code/project
+,#+HEADER: :orgit-rev main
+,#+HEADER: :orgit-file src/core.el
+,#+HEADER: :orgit-search (defun process-data
+,#+HEADER: :transclude-keyword ":thing-at-point sexp"
+,#+begin_src elisp
+,#+end_src
+#+end_src
+
+Benefits:
+- /Readable/: Each component labeled semantically
+- /Modifiable/: Change =:orgit-rev= without touching other components
+- /Validated/: Catch invalid git refs before fetch attempt
+- /Inheritable/: Set =:orgit-repo= in property drawer for entire subtree
+- /Self-documenting/: Header names explain purpose
+
+* Default Headers (No Configuration Required)
+:PROPERTIES:
+:CUSTOM_ID: default-headers-no-configuration-required
+:END:
+
+The package provides three headers that work immediately without registration:
+
+** =:transclude= - Direct Link Specification
+
+Specify complete link directly:
+
+#+begin_src org
+,#+HEADER: :transclude [[file:~/notes.org::*Heading]]
+,#+begin_src org
+,#+end_src
+#+end_src
+
+Accepts any link type org-transclusion supports:
+- File links: =[[file:path.org]]=, =[[file:path.org::*Heading]]=, =[[file:path.org::#custom-id]]=
+- ID links: =[[id:uuid]]=
+- Custom links: =[[orgit-file:...]]= (if org-transclusion-orgit installed)
+
+** =:transclude-keywords= - Pass org-transclusion Options
+
+Pass options to org-transclusion's keyword parser:
+
+#+begin_src org
+,#+HEADER: :transclude [[file:notes.org]]
+,#+HEADER: :transclude-keywords ":only-contents :lines 10-20"
+,#+begin_src org
+,#+end_src
+#+end_src
+
+Equivalent to org-transclusion keyword:
+#+begin_src org
+#+transclude: [[file:notes.org]] :only-contents :lines 10-20
+#+end_src
+
+Common keywords:
+- =:only-contents= - Exclude heading title
+- =:lines N-M= - Transclude line range
+- =:level N= - Set headline level
+- =:exclude-elements "drawer keyword"= - Exclude element types
+- =:expand-links= - Expand relative file paths to absolute
+
+See org-transclusion manual for complete keyword reference.
+
+** =:transclude-escape-org= - Control Org Syntax Escaping
+
+Override default escaping behavior per block:
+
+#+begin_src org
+,#+HEADER: :transclude [[file:notes.org]]
+,#+HEADER: :transclude-escape-org nil
+,#+begin_src org
+,#+end_src
+#+end_src
+
+Values:
+- =t= or =yes= - Force escaping (prepend commas to =*=, =#+= lines)
+- =nil= or =no= - Disable escaping
+- Omitted - Use default (=org-transclusion-blocks-escape-org-sources=)
+
+Escaping prevents Org markup in transcluded content from breaking src block structure.
+
+Default behavior (controlled by =org-transclusion-blocks-escape-org-sources=):
+- Org sources (=.org= files, =id:= links): Escaped
+- Non-Org sources (Python, text, etc.): Not escaped
+
+* Block Types
+:PROPERTIES:
+:CUSTOM_ID: block-types
+:END:
+
+The package supports any Org block with =#+begin_TYPE= / =#+end_TYPE= delimiters:
+
+** Source Blocks
+
+#+begin_src org
+,#+HEADER: :transclude [[file:code-samples.el::(defun process-data]]
+,#+HEADER: :transclude-keywords ":thing-at-point sexp"
+,#+begin_src elisp
+,#+end_src
+#+end_src
+
+** Quote Blocks (For Quotations)
+
+#+begin_src org
+,#+HEADER: :transclude [[file:~/research/literature.org::*Smith 2020]]
+,#+HEADER: :transclude-keywords ":only-contents"
+,#+begin_quote
+,#+end_quote
+#+end_src
+
+** Example Blocks (For Literal Examples)
+
+#+begin_src org
+,#+HEADER: :transclude [[file:~/projects/output.log]]
+,#+HEADER: :transclude-keywords ":lines 1-50"
+,#+begin_example
+,#+end_example
+#+end_src
+
+** Export Blocks (Format-Specific Content)
+
+#+begin_src org
+,#+HEADER: :transclude [[file:~/templates/header.html]]
+,#+begin_export html
+,#+end_export
+#+end_src
+
+** Custom Special Blocks
+
+#+begin_src org
+,#+HEADER: :transclude [[file:~/glossary.org::*Definition]]
+,#+begin_definition
+,#+end_definition
+#+end_src
+
+* Component-Based Links (Advanced)
+:PROPERTIES:
+:CUSTOM_ID: component-based-links-advanced
+:END:
+
+Component-based headers require type registration. The package includes no
+default registrations - all types are user-defined.
+
+** When to Use Component-Based Links
+
+Use components when:
+- Links are complex (multiple path segments, revisions, search terms)
+- You want validation before content fetch
+- You need property inheritance for repeated values
+- Links would benefit from semantic decomposition
+
+Continue using =:transclude= header for simple links.
+
+** Registration Tutorial: Journal Link Type
+
+Say your journal follows a date-based structure:
+
+#+begin_src org
+~/journal/2025/2025-01-15.org
+~/journal/2025/2025-01-16.org
+#+end_src
+
+You want semantic headers instead of file paths:
+
+#+begin_src org
+,#+HEADER: :transclude-type journal
+,#+HEADER: :journal-year 2025
+,#+HEADER: :journal-date 01-15
+,#+begin_src org
+,#+end_src
+#+end_src
+
+*** Step 1: Identify Components
+
+Break the link into pieces:
+- Year (4 digits, required)
+- Date (MM-DD format, required)
+
+*** Step 2: Define Component Spec
+
+Map semantic names to header keywords:
+
+#+begin_src elisp
+'(:year (:header :journal-year
+         :required t)
+  :date (:header :journal-date
+         :required t))
+#+end_src
+
+The =:year= symbol is internal (used in constructor). The =:journal-year= keyword
+appears in headers.
+
+*** Step 3: Write Constructor
+
+Transform components into file link:
+
+#+begin_src elisp
+(lambda (components)
+  (let ((year (plist-get components :year))
+        (date (plist-get components :date)))
+    (format "file:~/journal/%s/%s-%s.org"
+            year year date)))
+#+end_src
+
+Constructor receives =(:year "2025" :date "01-15")=, returns
+="file:~/journal/2025/2025-01-15.org"= (without =[[ ]]= brackets).
+
+*** Step 4: Register Type
+
+#+begin_src elisp
+(org-transclusion-blocks-register-type
+ 'journal
+ '(:year (:header :journal-year
+          :required t)
+   :date (:header :journal-date
+         :required t))
+ (lambda (components)
+   (let ((year (plist-get components :year))
+         (date (plist-get components :date)))
+     (format "file:~/journal/%s/%s-%s.org"
+             year year date))))
+#+end_src
+
+The type is now available. Use it:
+
+#+begin_src org
+,#+HEADER: :transclude-type journal
+,#+HEADER: :journal-year 2025
+,#+HEADER: :journal-date 01-15
+,#+begin_src org
+,#+end_src
+#+end_src
+
+*** Step 5: Add Validation (Optional)
+
+Catch format errors early:
+
+#+begin_src elisp
+(org-transclusion-blocks-register-type
+ 'journal
+ '(:year (:header :journal-year
+          :required t
+          :validator ,(org-transclusion-blocks-make-regexp-validator
+                       "^[0-9]\\{4\\}$" "year (4 digits)"))
+   :date (:header :journal-date
+          :required t
+          :validator ,(org-transclusion-blocks-make-regexp-validator
+                       "^[0-9]\\{2\\}-[0-9]\\{2\\}$" "date (MM-DD)")))
+ (lambda (components)
+   (let ((year (plist-get components :year))
+         (date (plist-get components :date)))
+     (format "file:~/journal/%s/%s-%s.org"
+             year year date))))
+#+end_src
+
+Now typos are caught before fetch:
+
+#+begin_src 
+Header :journal-date: date (MM-DD) must match pattern ^[0-9]\{2\}-[0-9]\{2\}$, got: "1-15"
+#+end_src
+
+** Component Interactions
+
+Components can declare relationships:
+
+*** Required Components
+
+Signals error if component missing:
+
+#+begin_src elisp
+'(:path (:header :my-path
+         :required t))
+#+end_src
+
+Error if =:my-path= absent:
+#+begin_src 
+Type my-type: required component :my-path (header :my-path) is missing
+#+end_src
+
+*** Shadowing (One Overrides Another)
+
+Warns when shadowed component present:
+
+#+begin_src elisp
+'(:search (:header :my-search
+           :shadowed-by (:transclude-lines :transclude-thing)))
+#+end_src
+
+Warning if =:my-search= and =:transclude-lines= both present:
+#+begin_src 
+Header :transclude-lines shadows :my-search; latter will be ignored
+#+end_src
+
+The =:my-search= value is ignored when =:transclude-lines= present.
+
+*** Dependencies (Requires Other Components)
+
+Signals error if dependency missing:
+
+#+begin_src elisp
+'(:search (:header :my-search
+           :requires (:path)))
+#+end_src
+
+Error if =:my-search= present but =:path= absent:
+#+begin_src 
+Component :my-search requires :path to be present
+#+end_src
+
+*** Conflicts (Mutually Exclusive)
+
+Signals error if both present:
+
+#+begin_src elisp
+'(:mode-a (:header :my-mode-a
+           :conflicts (:mode-b)))
+#+end_src
+
+Error if both =:my-mode-a= and =:my-mode-b= present:
+#+begin_src 
+Components :my-mode-a and :my-mode-b cannot be used together
+#+end_src
+
+Control warning display:
+#+begin_src elisp
+(setq org-transclusion-blocks-show-interaction-warnings nil)  ; Hide soft conflicts (shadowing)
+#+end_src
+
+Hard conflicts (requirements, mutual exclusions) always signal errors.
+
+** Validator Composition Utilities
+
+*** Non-Empty Validator
+
+Require non-empty string:
+
+#+begin_src elisp
+:validator ,(org-transclusion-blocks-make-non-empty-validator "repository path")
+#+end_src
+
+Error if empty:
+#+begin_src 
+Header :orgit-repo: repository path cannot be empty
+#+end_src
+
+*** Regexp Validator
+
+Match regular expression:
+
+#+begin_src elisp
+:validator ,(org-transclusion-blocks-make-regexp-validator
+             "^[0-9]\\{4\\}$" "year")
+#+end_src
+
+Error if pattern mismatch:
+#+begin_src 
+Header :journal-year: year must match pattern ^[0-9]\{4\}$, got: "25"
+#+end_src
+
+*** Predicate Validator
+
+Use custom predicate function:
+
+#+begin_src elisp
+:validator ,(org-transclusion-blocks-make-predicate-validator
+             #'file-exists-p "file path")
+#+end_src
+
+Error if predicate returns nil:
+#+begin_src 
+Header :file-path: invalid file path: "/nonexistent.org"
+#+end_src
+
+*** Sequential Composition
+
+Chain validators (stops at first error):
+
+#+begin_src elisp
+:validator ,(org-transclusion-blocks-compose-validators
+             (org-transclusion-blocks-make-non-empty-validator "path")
+             (org-transclusion-blocks-make-predicate-validator
+              #'file-exists-p "path"))
+#+end_src
+
+First checks non-empty, then checks existence.
+
+*** Custom Validators
+
+Write validator functions:
+
+#+begin_src elisp
+(defun my-validate-git-ref (value header-key type)
+  "Validate git reference format."
+  (unless (string-match-p "^[a-zA-Z0-9/_.-]+$" value)
+    (user-error "%s"
+                (org-transclusion-blocks-format-validation-error
+                 header-key
+                 "invalid git ref format"
+                 value
+                 "Expected: branch name, tag, or commit hash"
+                 "Examples: main, v1.0.0, abc1234")))
+  value)
+#+end_src
+
+Validator signature: =(lambda (value header-key type) ...)=
+- =value= - String from header
+- =header-key= - Keyword (=:my-header=)
+- =type= - Type symbol (='my-type=)
+- Returns - Validated value (possibly transformed)
+- Signals - =user-error= with message on failure
+
+Use =org-transclusion-blocks-format-validation-error= for consistent formatting.
+
+* Commands
+:PROPERTIES:
+:CUSTOM_ID: commands
+:END:
+
+** =org-transclusion-blocks-add=
+
+Fetch and insert content for block at point.
+
+Keybinding suggestion: =C-c n t=
+
+Behavior:
+1. Detects construction mode (direct =:transclude=, type-specific, etc.)
+2. Runs validators if type-specific components present
+3. Constructs link from headers
+4. Fetches content via org-transclusion
+5. Escapes Org syntax if applicable
+6. Inserts content into block body
+7. Shows success indicator (checkmark overlay)
+
+With prefix argument =C-u=:
+- Copies source content instead of transcluding (detached)
+- Content is editable, not linked to source
+
+** =org-transclusion-blocks-add-all=
+
+Process all blocks with transclusion headers in buffer or region.
+
+Keybinding suggestion: =C-c n T=
+
+Accepts scope argument:
+- =nil= or ='buffer= - Entire buffer (default)
+- ='subtree= - Current subtree only
+- ='region= - Active region
+
+Returns list of successfully processed block positions.
+
+** =org-transclusion-blocks-validate-current-block=
+
+Test validators without fetching content.
+
+Keybinding suggestion: =C-c n v=
+
+Useful for:
+- Testing validator configurations
+- Debugging error messages
+- Learning what triggers validation failures
+
+Reports validation success or shows error message.
+
+** =org-transclusion-blocks-describe-type=
+
+Display comprehensive documentation for registered type.
+
+Interactive usage: =M-x org-transclusion-blocks-describe-type RET journal RET=
+
+Shows:
+- Component specifications (headers, validators, constraints)
+- Interaction relationships (required, shadowed-by, requires, conflicts)
+- Constructor function
+- Usage example with all components
+
+Output appears in =*Help/= buffer.
+
+** =org-transclusion-blocks-list-types=
+
+Show all registered types with component counts.
+
+Interactive usage: =M-x org-transclusion-blocks-list-types RET=
+
+Example output:
+#+begin_src 
+Registered link types:
+
+  journal               2 components
+  project-file          4 components
+#+end_src
+
+Use =org-transclusion-blocks-describe-type= for detailed information about specific types.
+
+* Configuration
+:PROPERTIES:
+:CUSTOM_ID: configuration
+:END:
+
+** Minimal Configuration
+
+#+begin_src elisp
+(use-package org-transclusion-blocks
+  :after org-transclusion
+  :bind (:map org-mode-map
+         ("C-c n t" . org-transclusion-blocks-add)))
+#+end_src
+
+This enables:
+- Header-based transclusion with =:transclude=
+- Property inheritance
+- Persistent content
+- Org syntax escaping
+
+** Recommended Configuration
+
+#+begin_src elisp
+(use-package org-transclusion-blocks
+  :after org-transclusion
+  :custom
+  ;; Show warnings for shadowed components (default: t)
+  (org-transclusion-blocks-show-interaction-warnings t)
+  
+  ;; Success indicator duration in seconds (default: 2.0)
+  (org-transclusion-blocks-indicator-duration 3.0)
+  
+  ;; Enable Org syntax escaping for Org sources (default: t)
+  (org-transclusion-blocks-escape-org-sources t)
+  
+  :bind (:map org-mode-map
+         ("C-c n t" . org-transclusion-blocks-add)
+         ("C-c n T" . org-transclusion-blocks-add-all)
+         ("C-c n v" . org-transclusion-blocks-validate-current-block)))
+#+end_src
+
+** Customization Variables
+*** =org-transclusion-blocks-show-interaction-warnings=
+
+Default: =t=
+
+Whether to show warnings for component interactions.
+
+When =t=:
+- Warns about shadowed components (="Header :foo shadows :bar"=)
+- Warns about mode conflicts (mixed construction forms)
+- Still signals errors for hard conflicts (requirements, mutual exclusions)
+
+When =nil=:
+- Only signals errors for hard conflicts
+- No warnings for soft conflicts
+
+*** =org-transclusion-blocks-indicator-duration=
+
+Default: =2.0=
+
+Seconds to display success indicator (checkmark overlay) after content insertion.
+
+Set to =0= to disable indicator entirely.
+
+*** =org-transclusion-blocks-timestamp-property=
+
+Default: ='org-transclusion-blocks-fetched=
+
+Text property name for storing fetch timestamp on transcluded content.
+
+Used for future refresh functionality. Not user-visible.
+
+*** =org-transclusion-blocks-escape-org-sources=
+
+Default: =t=
+
+Whether to escape Org syntax when transcluding from Org files.
+
+When =t= (recommended):
+- Automatically escapes content from =.org= files, =id:= links, etc.
+- Prevents =*= (headlines), =#+= (keywords) from breaking src block structure
+- Prepends comma to lines starting with Org markup
+
+When =nil=:
+- No escaping
+- User must manually escape or risk syntax errors
+
+Override per-block with =:transclude-escape-org= header.
+
+Does not affect non-Org sources (Python, text, etc.).
+
+* Integration with org-transclusion
+:PROPERTIES:
+:CUSTOM_ID: integration-with-org-transclusion
+:END:
+
+This package is a /link construction framework/. org-transclusion is the /content
+extraction framework/. The relationship:
+
+1. /org-transclusion-blocks/: Component headers → Link string
+2. /org-transclusion/: Link string → Content extraction
+   
+** org-transclusion Features Still Work (IN PROGRESS)
+
+All org-transclusion capabilities work:
+- =:only-contents= - Exclude heading titles
+- =:lines= - Line range extraction
+- =:level= - Headline level adjustment
+- =:exclude-elements= - Filter element types
+- =:expand-links= - Expand relative paths
+- Live sync (if enabled)
+- Export handling
+
+Pass these via =:transclude-keywords= header:
+
+#+begin_src org
+,#+HEADER: :transclude [[file:notes.org]]
+,#+HEADER: :transclude-keywords ":only-contents :level 2"
+,#+begin_src org
+,#+end_src
+#+end_src
+
+** Compatibility with transient Branch
+
+The upcoming =transient= branch of org-transclusion generalizes transclusion to
+any link type via =org-link-open=. This benefits our component-based approach:
+
+/Before transient/:
+- Specialized link types require extension packages (=org-transclusion-orgit=)
+- Each extension implements custom navigation logic
+
+/After transient/:
+- org-transclusion handles any link type via standard =org-link-open=
+- Component-based headers construct standard Org links
+- No extension packages needed (unless link type itself requires one, like =orgit=)
+
+Your component headers construct standard links. org-transclusion navigates to them.
+
+* Package Ecosystem
+:PROPERTIES:
+:CUSTOM_ID: package-ecosystem
+:END:
+
+** org-transclusion (Required)
+
+[[https://github.com/nobiot/org-transclusion][org-transclusion]] handles content
+fetching and extraction. org-transclusion-blocks constructs links,
+org-transclusion navigates and fetches.
+
+Install via MELPA or GNU ELPA:
+
+#+begin_src elisp
+(use-package org-transclusion)
+#+end_src
+
+** orgit (Optional, for Git Repository Links)
+
+[[https://github.com/magit/orgit][orgit]] provides =orgit-file:= link type for
+Git repository navigation. Useful with component-based headers:
+
+#+begin_src org
+,#+HEADER: :transclude-type orgit-file
+,#+HEADER: :orgit-repo ~/code/project
+,#+HEADER: :orgit-rev v1.2.0
+,#+HEADER: :orgit-file src/core.el
+,#+begin_src elisp
+,#+end_src
+#+end_src
+
+Install via MELPA:
+
+#+begin_src elisp
+(use-package orgit)
+#+end_src
+
+** org-transclusion-orgit (Optional, Pre-transient Only)
+
+Extension enabling org-transclusion to fetch from =orgit-file:= links. Required if
+using pre-transient org-transclusion with orgit links.
+
+** Recommended Workflow
+
+1. Install org-transclusion (handles content fetching)
+2. Install org-transclusion-blocks (adds header-based construction)
+3. Optionally: Install orgit-file for Magit file blob links
+4. Optionally: Install org-transclusion-git
+
+Packages compose. Each adds capability without replacing others.
+
+* Troubleshooting
+:PROPERTIES:
+:CUSTOM_ID: troubleshooting
+:END:
+
+** "No transclusion headers found"
+
+/Symptom/: Command reports no headers after invoking =org-transclusion-blocks-add=.
+
+/Diagnosis/:
+1. Check block has at least one recognized header:
+   - =:transclude= (direct link)
+   - =:transclude-type= (component-based)
+
+2. Verify header syntax:
+   #+begin_src org
+   #+HEADER: :transclude [[file:path.org]]  ; Correct
+   #+HEADER :transclude [[file:path.org]]   ; WRONG (missing colon)
+   #+HEADER: transclude [[file:path.org]]   ; WRONG (missing colon before keyword)
+   #+end_src
+
+/Solution/: Add recognized header with correct syntax.
+
+** "Type X: required component Y is missing"
+
+/Symptom/: Error message indicates missing required component.
+
+/Diagnosis/: Registered type declares component as =:required t= but header absent.
+
+/Solution/:
+
+Option 1 - Add missing component:
+#+begin_src org
+#+HEADER: :transclude-type journal
+#+HEADER: :journal-year 2025  ; Add this
+#+HEADER: :journal-date 01-15
+#+end_src
+
+Option 2 - Use different construction form:
+#+begin_src org
+#+HEADER: :transclude [[file:~/journal/2025/2025-01-15.org]]
+#+end_src
+
+** "Failed to fetch transclusion content"
+
+/Symptom/: org-transclusion reports fetch failure.
+
+/Diagnosis/: Link is constructed but target is unreachable.
+
+/Investigation/:
+
+Step 1 - Test link directly:
+
+#+begin_src org
+,#+HEADER: :transclude [[file:~/notes.org::*Heading]]
+                     ^ Place point here
+#+end_src
+
+Press =C-c C-o= (=org-open-at-point=). If this fails, link is invalid.
+
+Step 2 - Check link type support:
+
+Some link types require org-transclusion extensions:
+- =orgit-file:= - Requires =org-transclusion-orgit= (pre-transient) or =transient= branch
+- =id:= - Built-in support
+- =file:= - Built-in support
+
+Check registered handlers: =M-: org-transclusion-add-functions=
+
+Step 3 - Enable debug output:
+
+#+begin_src elisp
+(setq org-transclusion-debug t)
+#+end_src
+
+Retry =org-transclusion-blocks-add=. Check =*Messages/= buffer for diagnostics.
+
+Step 4 - Verify target exists:
+
+Navigate manually to target:
+1. Open file
+2. Search for heading/pattern
+3. Confirm content exists
+
+If target missing, link works but fetch returns empty.
+
+/Solution/: Fix link or target based on diagnosis.
+
+** "Header :foo shadows :bar; latter will be ignored"
+
+/Symptom/: Warning about shadowed component.
+
+/Diagnosis/: Component declares =:shadowed-by (:foo)= and both headers present.
+
+Example:
+#+begin_src org
+,#+HEADER: :transclude-type my-type
+,#+HEADER: :my-search "pattern"        ; Will be ignored
+,#+HEADER: :transclude-lines 10-20     ; Takes precedence
+#+end_src
+
+/Understanding/: The =:transclude-lines= header overrides =:my-search= completely.
+The search value is never used.
+
+/Solution/:
+
+Option 1 - Remove shadowed header:
+#+begin_src org
+,#+HEADER: :transclude-type my-type
+,#+HEADER: :transclude-lines 10-20     ; Use this
+#+end_src
+
+Option 2 - Remove shadowing header:
+#+begin_src org
+,#+HEADER: :transclude-type my-type
+,#+HEADER: :my-search "pattern"        ; Use this
+#+end_src
+
+Option 3 - Disable warnings:
+#+begin_src elisp
+(setq org-transclusion-blocks-show-interaction-warnings nil)
+#+end_src
+
+** Babel Evaluation Errors with Search Patterns
+
+/Symptom/: Error "end of file during parsing" when using search patterns in src blocks.
+
+/Diagnosis/: Babel evaluates values starting with =(= as Elisp expressions.
+
+Example problem:
+#+begin_src org
+,#+HEADER: :orgit-search (defun process-data
+,#+begin_src elisp
+,#+end_src
+#+end_src
+
+Babel tries to evaluate =(defun process-data= and fails (incomplete s-expression).
+
+/Solution 1/ - Quote the search term:
+
+#+begin_src org
+,#+HEADER: :orgit-search "(defun process-data"
+,#+begin_src elisp
+,#+end_src
+#+end_src
+
+/Solution 2/ - Use complete s-expression:
+
+#+begin_src org
+,#+HEADER: :orgit-search (defun process-data (x y) (+ x y))
+,#+begin_src elisp
+,#+end_src
+#+end_src
+
+/Solution 3/ - Use validator that catches incomplete expressions:
+
+See "Custom Validators" section for search pattern validation example.
+
+/Note/: This issue only affects src blocks (Babel processes headers). Other block
+types (quote, example, etc.) don't evaluate headers, so search patterns work
+without quoting.
+
+** Content Appears with Unwanted Org Markup
+
+/Symptom/: Transcluded content has unexpected commas before =*= or =#+= lines.
+
+/Example/:
+#+begin_src org
+,* This line has comma
+,#+KEYWORD: also has comma
+#+end_src
+
+/Diagnosis/: Org syntax escaping is active.
+
+/Understanding/: Escaping prevents Org from interpreting headlines and keywords
+in src blocks. Without escaping, =/ Heading= would be treated as a headline,
+=#+KEYWORD= would close the block.
+
+/Solution/:
+
+If you want unescaped content (and accept the risk):
+
+#+begin_src org
+,#+HEADER: :transclude [[file:notes.org]]
+,#+HEADER: :transclude-escape-org nil
+,#+begin_src org
+,#+end_src
+#+end_src
+
+Or disable globally:
+
+#+begin_src elisp
+(setq org-transclusion-blocks-escape-org-sources nil)
+#+end_src
+
+/Note/: Disabling escaping for Org sources in src blocks will cause syntax errors
+if content contains headlines or keywords. Use non-src block types (quote,
+example) if you need literal Org content.
+
+* Comparison with Alternatives
+:PROPERTIES:
+:CUSTOM_ID: comparison-with-alternatives
+:END:
+
+** Direct org-transclusion
+
+/org-transclusion/ (keyword-based):
+
+#+begin_src org
+#+transclude: [[file:/path/to/file.org::*Heading]] :only-contents
+#+end_src
+
+/org-transclusion-blocks/ (header-based):
+
+#+begin_src org
+,#+HEADER: :transclude [[file:/path/to/file.org::*Heading]]
+,#+HEADER: :transclude-keywords ":only-contents"
+,#+begin_src org
+,#+end_src
+#+end_src
+
+/Key Differences/:
+
+| Aspect               | org-transclusion             | org-transclusion-blocks           |
+|----------------------+------------------------------+-----------------------------------|
+| Syntax               | =#+transclude:= keyword        | =#+HEADER:= arguments               |
+| Display              | Overlay (volatile)           | Persistent in buffer              |
+| Version control      | Content not saved            | Content saved to file             |
+| Property inheritance | Not supported                | Full support via =:PROPERTIES:=     |
+| Babel integration    | Not applicable               | Full support (=:session=, etc.)     |
+| Block types          | Any location                 | Org blocks only                   |
+| Offline access       | Requires active transclusion | Works offline (content persisted) |
+
+/Choose org-transclusion when/:
+- You want live-synced overlays
+- Content should not persist in file
+- You prefer =#+transclude:= keyword syntax
+
+/Choose org-transclusion-blocks when/:
+- You want persistent content (version control, offline)
+- You need property inheritance
+- You want Babel integration (src blocks)
+- Complex links benefit from component decomposition
+- You want validation before fetch
+
+Both use same content-fetching machinery (org-transclusion). They differ in
+interface and content persistence.
+
+* Resources
+:PROPERTIES:
+:CUSTOM_ID: resources
+:END:
+
+** Documentation
+
+- [[https://github.com/nobiot/org-transclusion][org-transclusion repository]] - Content fetching framework
+- [[https://github.com/nobiot/org-transclusion/blob/main/docs/org-transclusion-manual.org][org-transclusion manual]] - Comprehensive guide to transclusion features
+- [[https://orgmode.org/manual/Working-with-Source-Code.html][Org manual: Working with Source Code]] - Babel and source blocks
+- [[https://orgmode.org/manual/Link-Format.html][Org manual: Link Format]] - Link syntax and conventions
+- [[https://orgmode.org/manual/Using-Header-Arguments.html][Org manual: Header Arguments]] - Property inheritance and header usage
+
+** Examples
+
+See =testing/examples/= directory in repository for:
+- Custom link type registrations
+- Validator implementations
+- Constructor patterns
+- Integration with external tools
+- Property inheritance workflows
+
+** Related Packages
+
+- [[https://github.com/nobiot/org-transclusion][org-transclusion]] - Content fetching and overlay management
+- [[https://github.com/magit/orgit][orgit]] - Git repository links for Org
+- [[https://github.com/gggion/orgit-file][orgit-file]] - Org links to files in Git repositories
+- [[https://github.com/gggion/org-transclusion-orgit][org-transclusion-orgit]] - transclusion support for orgit-file and other orgit link types
+
+** Contributing
+
+Contributions welcome. Please:
+
+1. Open issue describing feature or bug
+2. Reference issue in pull request  
+3. Add tests for new functionality
+4. Update documentation for user-visible changes
+
+* Acknowledgments
+:PROPERTIES:
+:CUSTOM_ID: acknowledgments
+:END:
+
+- [[https://github.com/nobiot/org-transclusion][org-transclusion]] by Noboru Ota for content-fetching infrastructure
+
+* License
+:PROPERTIES:
+:CUSTOM_ID: license
+:END:
+
+GPLv3 or later

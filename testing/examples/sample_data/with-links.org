@@ -1,0 +1,7 @@
+#+title: File with Relative Links
+
+* Section with Links
+
+See [[file:sample.org][related document]] for more details.
+
+Also check [[file:./nested.org::*Level 1 Heading][nested structure]].

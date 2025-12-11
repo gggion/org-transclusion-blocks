@@ -1,0 +1,72 @@
+#+title: Sample Org File for Transclusion Testing
+#+author: Test User
+
+* Introduction
+This is the first section before any headlines.
+
+It contains some introductory text that can be transcluded
+with or without the first section.
+
+* Data Analysis
+** Results Overview
+
+The analysis shows promising results across all samples.
+
+| Sample | Value | Result |
+|--------+-------+--------|
+| A      |   100 | Pass   |
+| B      |    85 | Pass   |
+| C      |    45 | Fail   |
+
+** Methodology
+:PROPERTIES:
+:ID:       550e8400-e29b-41d4-a716-446655440000
+:CREATED:  [2025-01-15 Wed]
+:END:
+
+We used a three-stage approach:
+
+1. Data collection
+2. Statistical analysis
+3. Validation
+
+*** Sample Collection
+
+Samples were collected from three different sources.
+
+- Source A: Primary dataset
+- Source B: Validation dataset
+- Source C: Control group
+
+*** Analysis Process
+
+The analysis followed standard procedures.
+
+#+begin_src python
+def analyze_data(samples):
+    results = []
+    for sample in samples:
+        if sample.value >= 50:
+            results.append("Pass")
+        else:
+            results.append("Fail")
+    return results
+#+end_src
+
+* References
+
+See the related documentation in the appendix.
+
+#+begin_quote
+"Data quality is more important than data quantity."
+-- Anonymous
+#+end_quote
+
+* Appendix
+** Technical Details
+
+Additional technical specifications.
+
+** Data Tables
+
+Raw measurement data.

@@ -1,0 +1,23 @@
+#+title: Nested Structure Example
+
+* Level 1 Heading
+** Level 2 Heading
+*** Level 3 Heading
+**** Level 4 Heading
+
+This deeply nested content can be transcluded
+and adjusted to different levels.
+
+- Point A
+- Point B
+  - Subpoint B1
+  - Subpoint B2
+- Point C
+
+**** Another Level 4 Heading
+
+More nested content here.
+
+*** Back to Level 3
+
+Content at level 3.

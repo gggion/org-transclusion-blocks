@@ -1,0 +1,38 @@
+{
+  "name": "sample-project",
+  "version": "1.0.0",
+  "description": "Sample JSON file for testing",
+  "config": {
+    "environment": "development",
+    "debug": true,
+    "port": 3000,
+    "database": {
+      "host": "localhost",
+      "port": 5432,
+      "name": "testdb"
+    }
+  },
+  "features": [
+    {
+      "name": "authentication",
+      "enabled": true,
+      "options": {
+        "providers": ["local", "oauth"],
+        "session_timeout": 3600
+      }
+    },
+    {
+      "name": "caching",
+      "enabled": true,
+      "options": {
+        "ttl": 300,
+        "max_size": 1000
+      }
+    }
+  ],
+  "scripts": {
+    "start": "node server.js",
+    "test": "jest",
+    "build": "webpack --mode production"
+  }
+}
