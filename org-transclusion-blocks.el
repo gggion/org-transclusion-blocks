@@ -522,6 +522,27 @@ Returns TYPE symbol."
 
 ;;;; Mode Detection
 
+(defun org-transclusion-blocks--get-all-registered-headers ()
+  "Return alist mapping headers to their owning types.
+
+Each entry: (HEADER-KEYWORD . TYPE-SYMBOL)
+
+Used to detect cross-type header contamination.
+
+Example return value:
+  ((:orgit-repo . orgit-file)
+   (:orgit-rev . orgit-file)
+   (:orgit-file . orgit-file)
+   (:orgit-search . orgit-file)
+   (:file-path . file)
+   (:file-search . file))"
+  (let ((header-registry nil))
+    (cl-loop for (type . component-spec) in org-transclusion-blocks--type-components
+             do (cl-loop for (_ meta) on component-spec by #'cddr
+                         for header = (plist-get meta :header)
+                         do (push (cons header type) header-registry)))
+    (nreverse header-registry)))
+
 (defun org-transclusion-blocks--detect-mode (params)
   "Determine which construction mode PARAMS represents.
 
@@ -542,17 +563,26 @@ Used by `org-transclusion-blocks--check-mode-compat'."
    (t nil)))
 
 (defun org-transclusion-blocks--check-mode-compat (params)
-  "Warn if PARAMS mixes construction modes.
+  "Warn if PARAMS mixes construction modes or cross-contaminates types.
 
 PARAMS is alist of header arguments.
 
-Emits warnings when `org-transclusion-blocks-show-interaction-warnings' is t.
+Emits warnings when `org-transclusion-blocks-show-interaction-warnings'
+is non-nil.
+
+Checks for:
+1. Direct mode (:transclude) mixed with component mode (:transclude-type)
+2. Headers from other registered types appearing in current type's block
+
+Ignores headers not in registry (Babel headers, framework headers,
+unregistered custom headers).
 
 Called by `org-transclusion-blocks-add'."
   (when org-transclusion-blocks-show-interaction-warnings
     (let ((mode (org-transclusion-blocks--detect-mode params)))
       (pcase mode
         ('direct
+         ;; Warn if :transclude-type also present
          (when (assoc :transclude-type params)
            (display-warning
             'org-transclusion-blocks
@@ -560,20 +590,33 @@ Called by `org-transclusion-blocks-add'."
             :warning)))
 
         ('type-specific
-         (let ((type-symbol (intern (cdr (assoc :transclude-type params)))))
-           (when (seq-some (lambda (pair)
-                             (let ((key (car pair)))
-                               (and (not (memq key '(:transclude-type :transclude-keywords)))
-                                    (string-prefix-p ":" (symbol-name key))
-                                    (not (cl-loop for (_ meta) on (alist-get type-symbol
-                                                                             org-transclusion-blocks--type-components)
-                                                  by #'cddr
-                                                  thereis (eq key (plist-get meta :header)))))))
-                           params)
+         ;; Check for cross-type contamination
+         (let* ((current-type (intern (cdr (assoc :transclude-type params))))
+                (header-registry (org-transclusion-blocks--get-all-registered-headers))
+                (foreign-headers
+                 (seq-filter
+                  (lambda (pair)
+                    (let ((key (car pair)))
+                      (when-let ((owner-type (alist-get key header-registry)))
+                        ;; Header is registered to a different type
+                        (not (eq owner-type current-type)))))
+                  params)))
+
+           (when foreign-headers
              (display-warning
               'org-transclusion-blocks
-              (format "Type-specific mode active for %s; unrecognized component headers present"
-                      type-symbol)
+              (format "Type-specific mode active for %s; headers from other types detected:\n\n%s\n\nThese headers belong to:\n%s"
+                      current-type
+                      (mapconcat (lambda (pair)
+                                   (format "  %s" (car pair)))
+                                 foreign-headers
+                                 "\n")
+                      (mapconcat (lambda (pair)
+                                   (format "  %s -> %s type"
+                                           (car pair)
+                                           (alist-get (car pair) header-registry)))
+                                 foreign-headers
+                                 "\n"))
               :warning))))))))
 
 ;;;; Header Parsing
@@ -760,11 +803,10 @@ Called by `org-transclusion-blocks--params-to-plist'."
           (format "%s %s" link (org-strip-quotes keywords))
         link))))
 
-(defun org-transclusion-blocks--params-to-plist (params lang)
+(defun org-transclusion-blocks--params-to-plist (params)
   "Convert PARAMS alist to org-transclusion keyword plist.
 
 PARAMS is alist of header arguments.
-LANG currently unused.
 
 Returns plist for `org-transclusion-add-functions' or nil.
 
@@ -914,10 +956,7 @@ Returns t on success, nil if no headers or fetch failed."
                            (nth 2 (org-babel-get-src-block-info))
                          (org-transclusion-blocks--parse-headers-direct element)))
 
-               (lang (when (eq type 'src-block)
-                       (nth 0 (org-babel-get-src-block-info))))
-
-               (keyword-plist (org-transclusion-blocks--params-to-plist params lang)))
+               (keyword-plist (org-transclusion-blocks--params-to-plist params)))
 
           (org-transclusion-blocks--check-mode-compat params)
 
