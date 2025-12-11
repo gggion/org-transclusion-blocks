@@ -25,8 +25,6 @@
 
 ;;; Commentary:
 
-;; Framework for component-based transclusion link construction.
-;;
 ;; Decomposes complex links into semantic header arguments with validation:
 ;;
 ;;     #+HEADER: :transclude-type my-type
@@ -40,6 +38,19 @@
 ;;     #+HEADER: :transclude-keywords ":lines 10-15 :only-contents"
 ;;     #+begin_quote
 ;;     #+end_quote
+;;
+;; Generic transclusion control headers work with all link types:
+;;
+;;     #+HEADER: :transclude [[file:/path/file.txt]]
+;;     #+HEADER: :transclude-lines 10-20
+;;
+;;     #+HEADER: :transclude-type orgit-file
+;;     #+HEADER: :orgit-repo ~/project
+;;     #+HEADER: :orgit-file src/core.el
+;;     #+HEADER: :transclude-thing defun
+;;
+;; Generic headers (:transclude-lines, :transclude-thing) are mutually
+;; exclusive and take precedence over :transclude-keywords specifications.
 ;;
 ;; Org syntax escaping prevents markup collisions:
 ;;
@@ -103,9 +114,21 @@ Used for future refresh functionality."
 When non-nil, display warnings for:
 - Shadowed components
 - Mode conflicts (mixed header forms)
-- Soft conflicts
+- Soft conflicts (redundant specifications)
+- Generic header conflicts
 
-When nil, only hard conflicts (requirements, mutual exclusions) cause errors.
+When nil, only hard conflicts (requirements, mutual exclusions,
+incompatible generic headers) cause errors.
+
+Hard conflicts always signal errors:
+- Missing required components
+- Mutually exclusive components present
+- Both :transclude-lines and :transclude-thing specified
+
+Soft conflicts generate warnings when this is non-nil:
+- Shadowed component present
+- :transclude-lines duplicates :lines in :transclude-keywords
+- :transclude-thing duplicates :thing-at-point in keywords
 
 Warnings appear in *Warnings* buffer and echo area."
   :type 'boolean
@@ -132,6 +155,7 @@ Does not affect non-Org sources (Python files, text files, etc.)."
   :type 'boolean
   :group 'org-transclusion-blocks
   :package-version '(org-transclusion-blocks . "0.2.0"))
+
 
 ;;;; Internal Variables
 
@@ -343,7 +367,7 @@ Returns function with signature (VALUE HEADER-KEY TYPE).
 Example:
 
   :validator ,(org-transclusion-blocks-make-predicate-validator
-               #'file-exists-p \"file path\")
+               #\\='file-exists-p \"file path\")
 
 See `org-transclusion-blocks-register-type' for usage."
   (lambda (value header-key _type)
@@ -366,7 +390,7 @@ Example:
   :validator ,(org-transclusion-blocks-compose-validators
                (org-transclusion-blocks-make-non-empty-validator \"path\")
                (org-transclusion-blocks-make-predicate-validator
-                #'file-exists-p \"path\"))
+                #\\='file-exists-p \"path\"))
 
 See `org-transclusion-blocks-register-type' for usage."
   (lambda (value header-key type)
@@ -562,8 +586,71 @@ Used by `org-transclusion-blocks--check-mode-compat'."
     'type-specific)
    (t nil)))
 
+(defun org-transclusion-blocks--check-generic-conflicts (params)
+  "Check for conflicts in generic transclusion headers.
+
+PARAMS is alist of header arguments.
+
+Signals error for hard conflicts:
+- Both :transclude-lines and :transclude-thing present
+
+Warns for soft conflicts:
+- Header duplicates :transclude-keywords specification
+
+Called by `org-transclusion-blocks--check-mode-compat'."
+  (let ((lines-spec (org-transclusion-blocks--get-lines-spec params))
+        (thing-spec (org-transclusion-blocks--get-thing-spec params))
+        (keywords (assoc-default :transclude-keywords params)))
+
+    ;; Hard conflict: both lines and thing specified
+    (when (and lines-spec thing-spec)
+      (user-error "Cannot use both :transclude-lines and :transclude-thing
+Headers are mutually exclusive - choose one:
+  :transclude-lines for line ranges
+  :transclude-thing for semantic units"))
+
+    ;; Soft conflict warnings for redundancy
+    (when (and org-transclusion-blocks-show-interaction-warnings
+               keywords)
+      (let ((lines-in-keywords
+             (org-transclusion-blocks--extract-from-keywords
+              keywords ":lines"))
+            (thing-in-keywords
+             (org-transclusion-blocks--extract-from-keywords
+              keywords ":thing-at-point")))
+
+        (when (and lines-spec lines-in-keywords)
+          (display-warning
+           'org-transclusion-blocks
+           (format ":transclude-lines header value %S will override
+:lines specification in :transclude-keywords
+
+Found in keywords: %S
+Header takes precedence. Remove :lines from :transclude-keywords
+to eliminate this warning."
+                   lines-spec
+                   (substring keywords
+                              (car lines-in-keywords)
+                              (cdr lines-in-keywords)))
+           :warning))
+
+        (when (and thing-spec thing-in-keywords)
+          (display-warning
+           'org-transclusion-blocks
+           (format ":transclude-thing header value %S will override
+:thing-at-point specification in :transclude-keywords
+
+Found in keywords: %S
+Header takes precedence. Remove :thing-at-point from :transclude-keywords
+to eliminate this warning."
+                   thing-spec
+                   (substring keywords
+                              (car thing-in-keywords)
+                              (cdr thing-in-keywords)))
+           :warning))))))
+
 (defun org-transclusion-blocks--check-mode-compat (params)
-  "Warn if PARAMS mixes construction modes or cross-contaminates types.
+  "Warn if PARAMS mixes construction modes or has generic conflicts.
 
 PARAMS is alist of header arguments.
 
@@ -573,9 +660,8 @@ is non-nil.
 Checks for:
 1. Direct mode (:transclude) mixed with component mode (:transclude-type)
 2. Headers from other registered types appearing in current type's block
-
-Ignores headers not in registry (Babel headers, framework headers,
-unregistered custom headers).
+3. Conflicting generic headers (:transclude-lines vs :transclude-thing)
+4. Redundant specifications (header + keyword duplication)
 
 Called by `org-transclusion-blocks-add'."
   (when org-transclusion-blocks-show-interaction-warnings
@@ -605,7 +691,12 @@ Called by `org-transclusion-blocks-add'."
            (when foreign-headers
              (display-warning
               'org-transclusion-blocks
-              (format "Type-specific mode active for %s; headers from other types detected:\n\n%s\n\nThese headers belong to:\n%s"
+              (format "Type-specific mode active for %s; headers from other types detected:
+
+%s
+
+These headers belong to:
+%s"
                       current-type
                       (mapconcat (lambda (pair)
                                    (format "  %s" (car pair)))
@@ -617,7 +708,10 @@ Called by `org-transclusion-blocks-add'."
                                            (alist-get (car pair) header-registry)))
                                  foreign-headers
                                  "\n"))
-              :warning))))))))
+              :warning))))))
+
+    ;; Check generic header conflicts (works in both modes)
+    (org-transclusion-blocks--check-generic-conflicts params)))
 
 ;;;; Header Parsing
 
@@ -732,6 +826,39 @@ Returns t always."
 
 ;;;; Component Extraction
 
+(defun org-transclusion-blocks--get-lines-spec (params)
+  "Extract :lines specification from PARAMS alist.
+
+Returns string value of :transclude-lines header or nil.
+Does not parse the specification syntax."
+  (assoc-default :transclude-lines params))
+
+(defun org-transclusion-blocks--get-thing-spec (params)
+  "Extract :thing-at-point specification from PARAMS alist.
+
+Returns string value of :transclude-thing header or nil.
+Also checks :transclude-thingatpt alias."
+  (or (assoc-default :transclude-thing params)
+      (assoc-default :transclude-thingatpt params)))
+
+(defun org-transclusion-blocks--extract-from-keywords (keywords prop-name)
+  "Extract PROP-NAME value from KEYWORDS string.
+
+KEYWORDS is :transclude-keywords header value.
+PROP-NAME is property name like \":lines\" or \":thing-at-point\".
+
+Returns cons (START . END) of match region or nil.
+START/END are buffer positions in KEYWORDS string for replacement."
+  (when (and keywords (stringp keywords))
+    (with-temp-buffer
+      (insert keywords)
+      (goto-char (point-min))
+      (when (re-search-forward
+             (concat (regexp-quote prop-name)
+                     "\\s-+\\([^ \t\n]+\\)")
+             nil t)
+        (cons (match-beginning 0) (match-end 0))))))
+
 (defun org-transclusion-blocks--extract-type-components (type params)
   "Extract components for TYPE from PARAMS.
 
@@ -794,14 +921,45 @@ PARAMS is alist of header arguments.
 
 Returns string or nil.
 
-Includes :transclude-keywords if present.
+Processing order:
+1. Construct base link via direct or type-specific path
+2. Append :transclude-lines or :transclude-thing if present
+3. Append :transclude-keywords if present
+
+Header values override any conflicting specifications in keywords.
 
 Called by `org-transclusion-blocks--params-to-plist'."
   (when-let ((link (org-transclusion-blocks--construct-link params)))
-    (let ((keywords (assoc-default :transclude-keywords params)))
-      (if keywords
-          (format "%s %s" link (org-strip-quotes keywords))
-        link))))
+    (let* ((lines-spec (org-transclusion-blocks--get-lines-spec params))
+           (thing-spec (org-transclusion-blocks--get-thing-spec params))
+           (keywords (assoc-default :transclude-keywords params))
+           ;; Remove conflicting specs from keywords if present
+           (cleaned-keywords
+            (when keywords
+              (let ((kw keywords))
+                ;; Remove :lines if we have :transclude-lines header
+                (when lines-spec
+                  (when-let ((match (org-transclusion-blocks--extract-from-keywords
+                                     kw ":lines")))
+                    (setq kw (concat (substring kw 0 (car match))
+                                     (substring kw (cdr match))))))
+                ;; Remove :thing-at-point if we have :transclude-thing header
+                (when thing-spec
+                  (when-let ((match (org-transclusion-blocks--extract-from-keywords
+                                     kw ":thing-at-point")))
+                    (setq kw (concat (substring kw 0 (car match))
+                                     (substring kw (cdr match))))))
+                ;; Clean up double spaces
+                (replace-regexp-in-string "  +" " " kw)))))
+      ;; Build final keyword line
+      (concat link
+              (when lines-spec
+                (format " :lines %s" (org-strip-quotes lines-spec)))
+              (when thing-spec
+                (format " :thing-at-point %s" (org-strip-quotes thing-spec)))
+              (when (and cleaned-keywords
+                         (not (string-empty-p (string-trim cleaned-keywords))))
+                (format " %s" (org-strip-quotes cleaned-keywords)))))))
 
 (defun org-transclusion-blocks--params-to-plist (params)
   "Convert PARAMS alist to org-transclusion keyword plist.
