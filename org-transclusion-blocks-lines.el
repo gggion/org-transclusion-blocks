@@ -21,6 +21,7 @@
 ;; You should have received a copy of the GNU General Public License
 ;; along with this file.  If not, see <https://www.gnu.org/licenses/>.
 
+
 ;;; Commentary:
 
 ;; Interactive commands for manipulating :lines and :transclude-lines
@@ -53,6 +54,32 @@
 Used when no prefix argument provided to transient suffixes."
   :type 'integer
   :group 'org-transclusion-blocks-lines)
+
+;;;; Range Validation
+
+(defun org-transclusion-blocks-lines--at-upper-boundary-p ()
+  "Return non-nil if range end is at source maximum line.
+
+Used to prevent downward scroll/expansion when already at bottom.
+
+Returns nil if no metadata available."
+  (let* ((current-range (org-transclusion-blocks-lines--get-current-range))
+         (current-end (cdr current-range))
+         (element (org-element-at-point))
+         (bounds (org-transclusion-blocks--get-content-bounds element))
+         (beg (car bounds))
+         (max-line (get-text-property beg 'org-transclusion-blocks-max-line)))
+    (and current-end max-line (>= current-end max-line))))
+
+(defun org-transclusion-blocks-lines--at-lower-boundary-p ()
+  "Return non-nil if range start is at line 1.
+
+Used to prevent upward scroll/expansion when already at top.
+
+Returns nil if no metadata available."
+  (let* ((current-range (org-transclusion-blocks-lines--get-current-range))
+         (current-start (car current-range)))
+    (and current-start (<= current-start 1))))
 
 ;;;; Range Parsing and Formatting
 
@@ -114,72 +141,89 @@ START/END can be nil for open-ended ranges."
           nil))))))
 
 (defun org-transclusion-blocks-lines--update-range (new-start new-end)
-  "Update line range to NEW-START and NEW-END.
+  "Update line range to NEW-START and NEW-END with coherence validation.
 
 NEW-START and NEW-END can be nil for open-ended ranges.
+
+Validates logical coherence:
+- START >= 1
+- END >= START
+
+Directional boundary checking happens in calling commands
+via `org-transclusion-blocks-lines--at-upper-boundary-p' and
+`org-transclusion-blocks-lines--at-lower-boundary-p'.
 
 Updates :transclude-lines if present, otherwise :lines.
 Refreshes transclusion after update."
   (let* ((element (org-element-at-point))
-         (type (org-element-type element))
-         (new-range (org-transclusion-blocks-lines--format-range new-start new-end)))
-    (save-excursion
-      (goto-char (org-element-property :begin element))
+         (type (org-element-type element)))
 
-      (cond
-       ;; For src-blocks, update via header modification
-       ((eq type 'src-block)
-        (let ((found-transclude nil)
-              (found-lines nil)
-              (begin (org-element-property :begin element)))
-          ;; Start at beginning of element
-          (goto-char begin)
+    ;; Enforce logical coherence
+    (when new-start
+      (setq new-start (max 1 new-start)))
 
-          ;; Scan through all #+HEADER: lines before #+begin_src
-          (while (looking-at "^[ \t]*#\\+HEADER:")
-            (cond
-             ;; Found :transclude-lines
-             ((looking-at "^\\([ \t]*#\\+HEADER:[ \t]+\\):transclude-lines[ \t]+\\(.+\\)$")
-              (setq found-transclude t)
-              (replace-match (concat "\\1:transclude-lines " new-range) nil nil nil))
+    (when (and new-start new-end (> new-start new-end))
+      (user-error "Cannot make start line (%d) exceed end line (%d)"
+                  new-start new-end))
 
-             ;; Found :lines (only update if no :transclude-lines)
-             ((and (not found-transclude)
-                   (looking-at "^\\([ \t]*#\\+HEADER:[ \t]+\\):lines[ \t]+\\(.+\\)$"))
-              (setq found-lines t)
-              (replace-match (concat "\\1:lines " new-range) nil nil nil)))
+    (let ((new-range (org-transclusion-blocks-lines--format-range new-start new-end)))
+      (save-excursion
+        (goto-char (org-element-property :begin element))
 
-            ;; Move to next line
-            (forward-line 1))
-
-          ;; If neither found, insert :transclude-lines before #+begin_src
-          (unless (or found-transclude found-lines)
+        (cond
+         ;; For src-blocks, update via header modification
+         ((eq type 'src-block)
+          (let ((found-transclude nil)
+                (found-lines nil)
+                (begin (org-element-property :begin element)))
+            ;; Start at beginning of element
             (goto-char begin)
-            (insert (format "#+HEADER: :transclude-lines %s\n" new-range)))))
 
-       ;; For other blocks, update :transclude-lines in headers
-       (t
-        (let ((found nil)
-              (begin (org-element-property :begin element)))
-          ;; Start at beginning of element
-          (goto-char begin)
+            ;; Scan through all #+HEADER: lines before #+begin_src
+            (while (looking-at "^[ \t]*#\\+HEADER:")
+              (cond
+               ;; Found :transclude-lines
+               ((looking-at "^\\([ \t]*#\\+HEADER:[ \t]+\\):transclude-lines[ \t]+\\(.+\\)$")
+                (setq found-transclude t)
+                (replace-match (concat "\\1:transclude-lines " new-range) nil nil nil))
 
-          ;; Scan through all #+HEADER: lines before #+begin_XXX
-          (while (looking-at "^[ \t]*#\\+HEADER:")
-            (when (looking-at "^\\([ \t]*#\\+HEADER:[ \t]+\\):transclude-lines[ \t]+\\(.+\\)$")
-              (setq found t)
-              (replace-match (concat "\\1:transclude-lines " new-range) nil nil nil))
+               ;; Found :lines (only update if no :transclude-lines)
+               ((and (not found-transclude)
+                     (looking-at "^\\([ \t]*#\\+HEADER:[ \t]+\\):lines[ \t]+\\(.+\\)$"))
+                (setq found-lines t)
+                (replace-match (concat "\\1:lines " new-range) nil nil nil)))
 
-            ;; Move to next line
-            (forward-line 1))
+              ;; Move to next line
+              (forward-line 1))
 
-          ;; If not found, insert before block begin
-          (unless found
+            ;; If neither found, insert :transclude-lines before #+begin_src
+            (unless (or found-transclude found-lines)
+              (goto-char begin)
+              (insert (format "#+HEADER: :transclude-lines %s\n" new-range)))))
+
+         ;; For other blocks, update :transclude-lines in headers
+         (t
+          (let ((found nil)
+                (begin (org-element-property :begin element)))
+            ;; Start at beginning of element
             (goto-char begin)
-            (insert (format "#+HEADER: :transclude-lines %s\n" new-range)))))))
 
-    ;; Refresh transclusion
-    (org-transclusion-blocks-add)))
+            ;; Scan through all #+HEADER: lines before #+begin_XXX
+            (while (looking-at "^[ \t]*#\\+HEADER:")
+              (when (looking-at "^\\([ \t]*#\\+HEADER:[ \t]+\\):transclude-lines[ \t]+\\(.+\\)$")
+                (setq found t)
+                (replace-match (concat "\\1:transclude-lines " new-range) nil nil nil))
+
+              ;; Move to next line
+              (forward-line 1))
+
+            ;; If not found, insert before block begin
+            (unless found
+              (goto-char begin)
+              (insert (format "#+HEADER: :transclude-lines %s\n" new-range)))))))
+
+      ;; Refresh transclusion
+      (org-transclusion-blocks-add))))
 
 ;;;; Interactive Commands - Core Operations
 
@@ -261,6 +305,32 @@ Errors if range becomes invalid (start > end)."
       (org-transclusion-blocks-lines--update-range new-start new-end))))
 
 ;;;###autoload
+(defun org-transclusion-blocks-scroll-down (amount)
+  "Scroll line range down by AMOUNT lines.
+
+AMOUNT defaults to `org-transclusion-blocks-lines-default-increment'.
+Moves both start and end later.
+
+If range is 10-20, scrolling down by 3 produces 13-23.
+
+Prevented when end already at source maximum line."
+  (interactive "p")
+  (if (org-transclusion-blocks-lines--at-upper-boundary-p)
+      (let* ((element (org-element-at-point))
+             (bounds (org-transclusion-blocks--get-content-bounds element))
+             (beg (car bounds))
+             (max-line (get-text-property beg 'org-transclusion-blocks-max-line)))
+        (message "Cannot scroll beyond end of source (line %d)" max-line))
+    (let* ((current (org-transclusion-blocks-lines--get-current-range))
+           (start (car current))
+           (end (cdr current)))
+      (unless current
+        (user-error "No line range found. Use `org-transclusion-blocks-set-lines' first"))
+      (org-transclusion-blocks-lines--update-range
+       (when start (+ start amount))
+       (when end (+ end amount))))))
+
+;;;###autoload
 (defun org-transclusion-blocks-scroll-up (amount)
   "Scroll line range up by AMOUNT lines.
 
@@ -268,34 +338,20 @@ AMOUNT defaults to `org-transclusion-blocks-lines-default-increment'.
 Moves both start and end earlier.
 
 If range is 10-20, scrolling up by 3 produces 7-17.
-Start cannot go below 1."
+Start cannot go below 1.
+
+Prevented when start already at line 1."
   (interactive "p")
-  (let* ((current (org-transclusion-blocks-lines--get-current-range))
-         (start (car current))
-         (end (cdr current)))
-    (unless current
-      (user-error "No line range found. Use `org-transclusion-blocks-set-lines' first"))
-    (org-transclusion-blocks-lines--update-range
-     (when start (max 1 (- start amount)))
-     (when end (- end amount)))))
-
-;;;###autoload
-(defun org-transclusion-blocks-scroll-down (amount)
-  "Scroll line range down by AMOUNT lines.
-
-AMOUNT defaults to `org-transclusion-blocks-lines-default-increment'.
-Moves both start and end later.
-
-If range is 10-20, scrolling down by 3 produces 13-23."
-  (interactive "p")
-  (let* ((current (org-transclusion-blocks-lines--get-current-range))
-         (start (car current))
-         (end (cdr current)))
-    (unless current
-      (user-error "No line range found. Use `org-transclusion-blocks-set-lines' first"))
-    (org-transclusion-blocks-lines--update-range
-     (when start (+ start amount))
-     (when end (+ end amount)))))
+  (if (org-transclusion-blocks-lines--at-lower-boundary-p)
+      (message "Cannot scroll before beginning of source")
+    (let* ((current (org-transclusion-blocks-lines--get-current-range))
+           (start (car current))
+           (end (cdr current)))
+      (unless current
+        (user-error "No line range found. Use `org-transclusion-blocks-set-lines' first"))
+      (org-transclusion-blocks-lines--update-range
+       (when start (max 1 (- start amount)))
+       (when end (- end amount))))))
 
 ;;;; Interactive Commands - Asymmetric Operations
 
@@ -308,16 +364,20 @@ Moves start earlier, end unchanged.
 
 Example:
   Before: 50-100
-  After (amount=20): 30-100"
+  After (amount=20): 30-100
+
+Prevented when start already at line 1."
   (interactive "p")
-  (let* ((current (org-transclusion-blocks-lines--get-current-range))
-         (start (car current))
-         (end (cdr current)))
-    (unless current
-      (user-error "No line range found. Use `org-transclusion-blocks-set-lines' first"))
-    (org-transclusion-blocks-lines--update-range
-     (when start (max 1 (- start amount)))
-     end)))
+  (if (org-transclusion-blocks-lines--at-lower-boundary-p)
+      (message "Cannot expand before beginning of source")
+    (let* ((current (org-transclusion-blocks-lines--get-current-range))
+           (start (car current))
+           (end (cdr current)))
+      (unless current
+        (user-error "No line range found. Use `org-transclusion-blocks-set-lines' first"))
+      (org-transclusion-blocks-lines--update-range
+       (when start (max 1 (- start amount)))
+       end))))
 
 ;;;###autoload
 (defun org-transclusion-blocks-expand-down (amount)
@@ -328,16 +388,24 @@ Moves end later, start unchanged.
 
 Example:
   Before: 50-100
-  After (amount=20): 50-120"
+  After (amount=20): 50-120
+
+Prevented when end already at source maximum line."
   (interactive "p")
-  (let* ((current (org-transclusion-blocks-lines--get-current-range))
-         (start (car current))
-         (end (cdr current)))
-    (unless current
-      (user-error "No line range found. Use `org-transclusion-blocks-set-lines' first"))
-    (org-transclusion-blocks-lines--update-range
-     start
-     (when end (+ end amount)))))
+  (if (org-transclusion-blocks-lines--at-upper-boundary-p)
+      (let* ((element (org-element-at-point))
+             (bounds (org-transclusion-blocks--get-content-bounds element))
+             (beg (car bounds))
+             (max-line (get-text-property beg 'org-transclusion-blocks-max-line)))
+        (message "Cannot expand beyond end of source (line %d)" max-line))
+    (let* ((current (org-transclusion-blocks-lines--get-current-range))
+           (start (car current))
+           (end (cdr current)))
+      (unless current
+        (user-error "No line range found. Use `org-transclusion-blocks-set-lines' first"))
+      (org-transclusion-blocks-lines--update-range
+       start
+       (when end (+ end amount))))))
 
 ;;;###autoload
 (defun org-transclusion-blocks-shrink-up (amount)
@@ -393,9 +461,9 @@ Errors if end would go below start."
   "Adjust line range for transclusion at point.
 
 All commands accept prefix argument for custom increment.
-Default increment is =org-transclusion-blocks-lines-default-increment'."
+Default increment is `org-transclusion-blocks-lines-default-increment'."
   :refresh-suffixes t
-  
+
   ["Current Range"
    (:info (lambda ()
             (if-let ((range (org-transclusion-blocks-lines--get-current-range)))
@@ -403,27 +471,27 @@ Default increment is =org-transclusion-blocks-lines-default-increment'."
                         (or (car range) "∞")
                         (or (cdr range) "∞"))
               "No range set")))]
-  
+
   [["Scroll"
     ("p" "Up" org-transclusion-blocks-scroll-up :transient t)
     ("n" "Down" org-transclusion-blocks-scroll-down :transient t)]
-   
+
    ["Symmetric"
     ("+" "Expand" org-transclusion-blocks-expand-lines-range :transient t)
     ("-" "Shrink" org-transclusion-blocks-shrink-lines-range :transient t)]
-   
+
    ["Expand Edge"
     ("u" "↑ Top" org-transclusion-blocks-expand-up :transient t)
     ("d" "↓ Bottom" org-transclusion-blocks-expand-down :transient t)]
-   
+
    ["Shrink Edge"
     ("U" "↑ Top" org-transclusion-blocks-shrink-up :transient t)
     ("D" "↓ Bottom" org-transclusion-blocks-shrink-down :transient t)]
-   
+
    ["Set"
     ("s" "Absolute" org-transclusion-blocks-set-lines)
     ("w" "Width" org-transclusion-blocks-set-lines-range)]
-   
+
    ["Exit"
     ("q" "Quit" transient-quit-one)]])
 
