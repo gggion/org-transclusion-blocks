@@ -58,6 +58,19 @@
 ;; `org-transclusion-blocks-escape-org-sources'.  Override per-block with
 ;; :transclude-escape-org header or set file/subtree defaults via
 ;; #+PROPERTY: header-args.
+;; 
+;; ;; Converting existing transclusions:
+;;
+;; Existing #+transclude: keywords can be converted to header form:
+;;
+;;     M-x org-transclusion-blocks-convert-keyword-at-point
+;;
+;; Converts the keyword at point to equivalent header syntax. The
+;; original line is preserved as a comment for reference.
+;;
+;; For batch conversion:
+;;
+;;     M-x org-transclusion-blocks-convert-keywords-in-buffer
 ;;
 ;; Validator composition utilities:
 ;;
@@ -875,6 +888,244 @@ Used by `org-transclusion-blocks--construct-link'."
                                            (if (stringp value) value
                                              (format "%s" value))))))
       (when result result))))
+
+;;;; Link conversion
+(defun org-transclusion-blocks--parse-keyword-line ()
+  "Parse #+transclude: keyword at point.
+
+Returns plist with :link, :lines, :thing-at-point, :raw-keyword.
+
+Point must be on keyword line.
+
+Used by conversion functions to extract components."
+  (save-excursion
+    (beginning-of-line)
+    (unless (looking-at "^[ \t]*#\\+transclude:")
+      (error "Not on #+transclude: keyword line"))
+
+    (org-transclusion-keyword-string-to-plist)))
+
+(defun org-transclusion-blocks--validate-conversion-context ()
+  "Check if current position is suitable for keyword conversion.
+
+Returns t if on #+transclude: line and not inside block.
+Signals user-error with explanation otherwise.
+
+Used to guard conversion commands."
+  (save-excursion
+    (beginning-of-line)
+    (cond
+     ((not (looking-at "^[ \t]*#\\+transclude:"))
+      (user-error "Point is not on #+transclude: keyword line"))
+
+     ((org-transclusion-blocks--inside-block-p)
+      (user-error "Cannot convert keyword inside block; \
+move to keyword line first"))
+
+     (t t))))
+
+(defun org-transclusion-blocks--inside-block-p ()
+  "Return non-nil if point is inside a block structure.
+
+Checks for enclosing #+begin_/#+end_ delimiters."
+  (let ((element (org-element-at-point)))
+    (and element
+         (memq (org-element-type element)
+               '(src-block quote-block example-block export-block
+                 special-block verse-block center-block comment-block)))))
+
+
+;;;###autoload
+(defun org-transclusion-blocks-convert-keyword-at-point ()
+  "Convert #+transclude: keyword at point to header block form.
+
+Parses the keyword line using `org-transclusion-keyword-string-to-plist',
+extracts :link, :lines, :thing-at-point, and residual keywords,
+then generates equivalent header form:
+
+  ,#+HEADER: :transclude LINK
+  ,#+HEADER: :transclude-lines RANGE   ; if :lines present
+  ,#+HEADER: :transclude-thing THING   ; if :thing-at-point present
+  ,#+HEADER: :transclude-keywords RESIDUAL  ; if other keywords remain
+  ,#+begin_src LANG
+  ,#+end_src
+
+Original keyword line is commented for reference.
+
+Block language defaults to `elisp'.  Customize with prefix argument:
+with \\[universal-argument], prompt for block type.
+
+Point must be on #+transclude: keyword line.
+
+Returns t on success, nil if not on keyword line.
+
+See Info node `(org-transclusion-blocks) Converting Keywords'."
+  (interactive)
+  (save-excursion
+    (beginning-of-line)
+    (unless (looking-at "^[ \t]*#\\+transclude:")
+      (user-error "Point is not on #+transclude: keyword line"))
+
+    (let* ((original-line (buffer-substring-no-properties
+                           (line-beginning-position)
+                           (line-end-position)))
+           (keyword-plist (org-transclusion-keyword-string-to-plist))
+           (link (plist-get keyword-plist :link))
+           (lines-spec (plist-get keyword-plist :lines))
+           (thing-spec (plist-get keyword-plist :thing-at-point))
+           (raw-keyword-string (plist-get keyword-plist :raw-keyword))
+           (block-type (if current-prefix-arg
+                           (completing-read "Block type: "
+                                            '("src" "quote" "example")
+                                            nil t nil nil "src")
+                         "src"))
+           (block-lang (when (string= block-type "src")
+                         (if current-prefix-arg
+                             (read-string "Language: " "elisp")
+                           "elisp")))
+           (residual-keywords
+            (org-transclusion-blocks--extract-residual-keywords
+             raw-keyword-string lines-spec thing-spec)))
+
+      (unless link
+        (user-error "No link found in #+transclude: keyword"))
+
+      ;; Comment original line
+      (beginning-of-line)
+      (insert ";; Original: ")
+      (end-of-line)
+      (insert "\n")
+
+      ;; Generate header lines
+      (let ((indent (save-excursion
+                      (forward-line -1)
+                      (if (looking-at "^[ \t]*;; Original:")
+                          (current-indentation)
+                        0))))
+        (insert (make-string indent ?\s)
+                "#+HEADER: :transclude " link "\n")
+
+        (when lines-spec
+          (insert (make-string indent ?\s)
+                  "#+HEADER: :transclude-lines " lines-spec "\n"))
+
+        (when thing-spec
+          (insert (make-string indent ?\s)
+                  "#+HEADER: :transclude-thing " thing-spec "\n"))
+
+        (when (and residual-keywords
+                   (not (string-empty-p (string-trim residual-keywords))))
+          (insert (make-string indent ?\s)
+                  "#+HEADER: :transclude-keywords \""
+                  residual-keywords "\"\n"))
+
+        ;; Insert block delimiters
+        (insert (make-string indent ?\s)
+                "#+begin_" block-type)
+        (when block-lang
+          (insert " " block-lang))
+        (insert "\n")
+        (let ((body-start (point)))
+          (insert (make-string indent ?\s)
+                  "#+end_" block-type "\n")
+          ;; Position point in block body
+          (goto-char body-start)))
+
+      (message "Converted #+transclude: keyword to header form")
+      t)))
+
+(defun org-transclusion-blocks--extract-residual-keywords (raw-keyword-string
+                                                           lines-spec
+                                                           thing-spec)
+  "Extract keywords not promoted to dedicated headers.
+
+RAW-KEYWORD-STRING is the complete keyword portion after link.
+LINES-SPEC is value of :lines if present.
+THING-SPEC is value of :thing-at-point if present.
+
+Returns string of remaining keywords or nil.
+
+Removes :lines and :thing-at-point specifications, preserves all
+other keyword arguments like :only-contents, :level, :src, :export."
+  (when (and raw-keyword-string
+             (not (string-empty-p (string-trim raw-keyword-string))))
+    (let ((cleaned raw-keyword-string))
+      ;; Remove :lines specification if present
+      (when lines-spec
+        (setq cleaned
+              (replace-regexp-in-string
+               (concat ":lines[ \t]+" (regexp-quote lines-spec))
+               ""
+               cleaned)))
+
+      ;; Remove :thing-at-point specification if present
+      (when thing-spec
+        (setq cleaned
+              (replace-regexp-in-string
+               (concat ":thing-at-point[ \t]+" (regexp-quote thing-spec))
+               ""
+               cleaned)))
+
+      ;; Clean up multiple spaces
+      (setq cleaned (replace-regexp-in-string "[ \t]+" " " cleaned))
+      (setq cleaned (string-trim cleaned))
+
+      (if (string-empty-p cleaned)
+          nil
+        cleaned))))
+
+;;;###autoload
+(defun org-transclusion-blocks-convert-keywords-in-region (beg end)
+  "Convert all #+transclude: keywords to header form in region.
+
+BEG and END delimit region to process.
+
+Converts each #+transclude: keyword line within region using
+`org-transclusion-blocks-convert-keyword-at-point'.
+
+Returns list of positions where conversions occurred.
+
+Interactively, operates on active region if present, otherwise
+prompts for region boundaries.
+
+See Info node `(org-transclusion-blocks) Batch Converting'."
+  (interactive
+   (if (use-region-p)
+       (list (region-beginning) (region-end))
+     (list (read-number "Start position: " (point-min))
+           (read-number "End position: " (point-max)))))
+
+  (let ((converted-positions nil))
+    (save-excursion
+      (goto-char beg)
+      (while (re-search-forward "^[ \t]*#\\+transclude:" end t)
+        (beginning-of-line)
+        (let ((pos (point)))
+          (when (org-transclusion-blocks-convert-keyword-at-point)
+            (push pos converted-positions))
+          ;; Move past the newly inserted block
+          (when (re-search-forward "^[ \t]*#\\+end_" nil t)
+            (forward-line)))))
+
+    (message "Converted %d #+transclude: keyword%s"
+             (length converted-positions)
+             (if (= (length converted-positions) 1) "" "s"))
+
+    (nreverse converted-positions)))
+
+;;;###autoload
+(defun org-transclusion-blocks-convert-keywords-in-buffer ()
+  "Convert all #+transclude: keywords to header form in buffer.
+
+Delegates to `org-transclusion-blocks-convert-keywords-in-region'
+with buffer bounds.
+
+Returns list of positions where conversions occurred."
+  (interactive)
+  (org-transclusion-blocks-convert-keywords-in-region
+   (point-min)
+   (point-max)))
+
 
 ;;;; Link Construction
 
