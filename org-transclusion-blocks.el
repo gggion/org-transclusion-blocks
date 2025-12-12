@@ -1215,6 +1215,9 @@ PARAMS is alist of header arguments.
 
 Returns plist for `org-transclusion-add-functions' or nil.
 
+Stores constructed link in :constructed-link property for later
+retrieval by extension functions.
+
 Called by `org-transclusion-blocks-add'."
   (when-let ((transclude-line
               (org-transclusion-blocks--construct-transclude-line params)))
@@ -1223,8 +1226,11 @@ Called by `org-transclusion-blocks-add'."
         (delay-mode-hooks (org-mode))
         (insert "#+transclude: " transclude-line "\n")
         (goto-char (point-min))
-        (let ((plist (org-transclusion-keyword-string-to-plist))
-              (escape-org (assoc-default :transclude-escape-org params)))
+        (let* ((plist (org-transclusion-keyword-string-to-plist))
+               (link (plist-get plist :link))
+               (escape-org (assoc-default :transclude-escape-org params)))
+          ;; Store constructed link for extensions
+          (setq plist (plist-put plist :constructed-link link))
           (when escape-org
             (setq plist (plist-put plist :transclude-escape-org t)))
           plist)))))
@@ -1266,6 +1272,46 @@ Called by `org-transclusion-blocks-add'."
                         keyword-plist)))
     (plist-get payload :src-content)))
 
+;;;; Metadata insertion
+(defun org-transclusion-blocks--apply-metadata (beg end keyword-plist link-string)
+  "Apply transclusion metadata properties to region BEG to END.
+
+KEYWORD-PLIST is the org-transclusion keyword plist.
+LINK-STRING is the constructed link string (with [[ ]] brackets).
+
+Stores metadata for boundary checking and debugging.
+
+Properties stored:
+- `org-transclusion-blocks-keyword' - Full keyword plist
+- `org-transclusion-blocks-link' - Constructed link string
+- `org-transclusion-blocks-max-line' - Source buffer line count
+
+Called by `org-transclusion-blocks-add'."
+  (let ((max-line (org-transclusion-blocks--get-source-line-count link-string)))
+    (add-text-properties
+     beg end
+     `(org-transclusion-blocks-keyword ,keyword-plist
+       org-transclusion-blocks-link ,link-string
+       org-transclusion-blocks-max-line ,max-line))))
+
+(defun org-transclusion-blocks--get-source-line-count (link-string)
+  "Return line count of buffer targeted by LINK-STRING.
+
+LINK-STRING is complete link including [[ ]] brackets.
+
+Returns nil if buffer cannot be opened or has no content.
+
+Used by `org-transclusion-blocks--apply-metadata'."
+  (condition-case nil
+      (let ((link (org-transclusion-wrap-path-to-link link-string)))
+        (save-window-excursion
+          (save-excursion
+            ;; Open link in background
+            (org-link-open link)
+            ;; Count lines in opened buffer
+            (with-current-buffer (current-buffer)
+              (count-lines (point-min) (point-max))))))
+    (error nil)))
 ;;;; Content Insertion
 
 (defun org-transclusion-blocks--apply-timestamp (beg end)
@@ -1359,6 +1405,11 @@ Applies Org syntax escaping via
 `org-transclusion-blocks--escape-org-syntax' when
 `org-transclusion-blocks--should-escape-p' returns non-nil.
 
+Stores metadata in text properties for boundary checking:
+- `org-transclusion-blocks-keyword' - keyword plist
+- `org-transclusion-blocks-link' - constructed link
+- `org-transclusion-blocks-max-line' - source line count
+
 See `org-transclusion-blocks-list-types' for available types.
 
 Returns t on success, nil if no headers or fetch failed."
@@ -1390,27 +1441,31 @@ Returns t on success, nil if no headers or fetch failed."
                 (message "No transclusion headers found")
                 nil)
 
-            (if-let ((content (org-transclusion-blocks--fetch-content keyword-plist)))
-                (progn
-                  (when (org-transclusion-blocks--should-escape-p keyword-plist params)
-                    (setq content (org-transclusion-blocks--escape-org-syntax content)))
+            (let ((link-string (plist-get keyword-plist :link)))
+              (if-let ((content (org-transclusion-blocks--fetch-content keyword-plist)))
+                  (progn
+                    (when (org-transclusion-blocks--should-escape-p keyword-plist params)
+                      (setq content (org-transclusion-blocks--escape-org-syntax content)))
 
-                  (setq element (org-element-at-point))
-                  (org-transclusion-blocks--update-content element content)
-                  (setq org-transclusion-blocks--last-fetch-time (current-time))
+                    (setq element (org-element-at-point))
+                    (org-transclusion-blocks--update-content element content)
+                    (setq org-transclusion-blocks--last-fetch-time (current-time))
 
-                  (setq element (org-element-at-point))
-                  (let* ((bounds (org-transclusion-blocks--get-content-bounds element))
-                         (beg (car bounds))
-                         (end (cdr bounds)))
-                    (org-transclusion-blocks--apply-timestamp beg end))
+                    (setq element (org-element-at-point))
+                    (let* ((bounds (org-transclusion-blocks--get-content-bounds element))
+                           (beg (car bounds))
+                           (end (cdr bounds)))
+                      ;; Apply timestamp
+                      (org-transclusion-blocks--apply-timestamp beg end)
+                      ;; Apply metadata for boundary checking
+                      (org-transclusion-blocks--apply-metadata beg end keyword-plist link-string))
 
-                  (org-transclusion-blocks--show-indicator element)
-                  (message "Transclusion content inserted into %s block" type)
-                  t)
+                    (org-transclusion-blocks--show-indicator element)
+                    (message "Transclusion content inserted into %s block" type)
+                    t)
 
-              (message "Failed to fetch transclusion content")
-              nil)))))))
+                (message "Failed to fetch transclusion content")
+                nil))))))))
 
 ;;;###autoload
 (defun org-transclusion-blocks-add-all (&optional scope)
