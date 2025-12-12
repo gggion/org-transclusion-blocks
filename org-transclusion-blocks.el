@@ -5,7 +5,7 @@
 ;; Homepage: https://github.com/gggion/org-transclusion-blocks
 ;; Keywords: hypermedia vc
 
-;; Package-Version: 0.2.0
+;; Package-Version: 0.3.0
 ;; Package-Requires: ((emacs "29.1") (org-transclusion "1.4.0") (org "9.7"))
 
 ;; SPDX-License-Identifier: GPL-3.0-or-later
