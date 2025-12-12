@@ -298,22 +298,18 @@ Used by `org-transclusion-blocks--update-content' and
 ELEMENT is org-element block context.
 CONTENT is string to insert.
 
-For src-block, delegates to `org-babel-update-block-body'.
-For other blocks, directly replaces content region.
-
-Called by `org-transclusion-blocks-add'."
-  (if (eq (org-element-type element) 'src-block)
-      (org-babel-update-block-body content)
-    (let* ((bounds (org-transclusion-blocks--get-content-bounds element))
-           (beg (car bounds))
-           (end (cdr bounds)))
-      (unless (and beg end)
-        (error "Could not determine content bounds for %s at position %d"
-               (org-element-type element)
-               (org-element-property :begin element)))
-      (delete-region beg end)
-      (goto-char beg)
-      (insert content))))
+Replaces content directly for all block types to preserve
+whitespace including leading/trailing blank lines."
+  (let* ((bounds (org-transclusion-blocks--get-content-bounds element))
+         (beg (car bounds))
+         (end (cdr bounds)))
+    (unless (and beg end)
+      (error "Could not determine content bounds for %s at position %d"
+             (org-element-type element)
+             (org-element-property :begin element)))
+    (delete-region beg end)
+    (goto-char beg)
+    (insert content)))
 
 ;;;; Validator Composition Utilities
 
