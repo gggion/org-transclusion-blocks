@@ -1042,22 +1042,42 @@ ELEMENT is org-element block context.
 Shows checkmark for `org-transclusion-blocks-indicator-duration' seconds.
 Displays fetch timestamp in echo area if available.
 
+Reuses existing indicator overlay if present, extending its timer.
+This prevents overlay accumulation during rapid refreshes.
+
 Called by `org-transclusion-blocks-add'."
   (when (> org-transclusion-blocks-indicator-duration 0)
     (let* ((beg (org-element-property :begin element))
            (end (save-excursion
                   (goto-char beg)
                   (line-end-position)))
-           (ov (make-overlay beg end)))
+           ;; Check for existing indicator overlay
+           (existing-ov
+            (seq-find
+             (lambda (ov)
+               (overlay-get ov 'org-transclusion-blocks-indicator))
+             (overlays-in beg end)))
+           (ov (or existing-ov (make-overlay beg end))))
+
+      ;; Cancel existing timer if overlay was reused
+      (when existing-ov
+        (when-let ((timer (overlay-get ov 'org-transclusion-blocks-timer)))
+          (cancel-timer timer)))
+
+      ;; Set overlay properties (idempotent if reusing)
       (overlay-put ov 'before-string
                    (propertize "☑ " 'face '(:foreground "green" :weight bold)))
       (overlay-put ov 'org-transclusion-blocks-indicator t)
-      (run-at-time org-transclusion-blocks-indicator-duration
-                   nil
-                   (lambda (overlay)
-                     (when (overlay-buffer overlay)
-                       (delete-overlay overlay)))
-                   ov)))
+
+      ;; Create new timer and store it on overlay
+      (let ((timer (run-at-time org-transclusion-blocks-indicator-duration
+                                nil
+                                (lambda (overlay)
+                                  (when (overlay-buffer overlay)
+                                    (delete-overlay overlay)))
+                                ov)))
+        (overlay-put ov 'org-transclusion-blocks-timer timer))))
+
   (when org-transclusion-blocks--last-fetch-time
     (message "Content fetched at %s"
              (format-time-string "%H:%M:%S"
