@@ -305,14 +305,41 @@ Used by `org-transclusion-blocks--update-content' and
         (forward-line 0)
         (cons beg (point))))))
 
+(defun org-transclusion-blocks--ensure-trailing-newline (content)
+  "Ensure CONTENT ends with newline without stripping trailing blank lines.
+
+Unlike `org-element-normalize-string', this preserves all internal
+and trailing whitespace including blank lines.  Only adds a newline
+if content lacks one entirely.
+
+Returns CONTENT unchanged if not a string or empty.
+Returns CONTENT with single appended newline if missing.
+Returns CONTENT unchanged if already ends with newline.
+
+Used by `org-transclusion-blocks--update-content' to prevent block
+delimiter concatenation while preserving whitespace fidelity."
+  (cond
+   ;; Not a string or empty - return unchanged
+   ((not (stringp content)) content)
+   ((string= "" content) content)
+   ;; Already ends with newline - return unchanged
+   ((string-suffix-p "\n" content) content)
+   ;; Missing newline - append exactly one
+   (t (concat content "\n"))))
+
 (defun org-transclusion-blocks--update-content (element content)
   "Replace ELEMENT's content with CONTENT string.
 
 ELEMENT is org-element block context.
 CONTENT is string to insert.
 
+Ensures content ends with newline via
+`org-transclusion-blocks--ensure-trailing-newline' to prevent
+block delimiter concatenation, while preserving all internal
+and trailing whitespace including blank lines.
+
 Replaces content directly for all block types to preserve
-whitespace including leading/trailing blank lines."
+whitespace fidelity for line-range transclusions."
   (let* ((bounds (org-transclusion-blocks--get-content-bounds element))
          (beg (car bounds))
          (end (cdr bounds)))
@@ -322,7 +349,8 @@ whitespace including leading/trailing blank lines."
              (org-element-property :begin element)))
     (delete-region beg end)
     (goto-char beg)
-    (insert content)))
+    ;; Ensure trailing newline without stripping whitespace
+    (insert (org-transclusion-blocks--ensure-trailing-newline content))))
 
 ;;;; Validator Composition Utilities
 
