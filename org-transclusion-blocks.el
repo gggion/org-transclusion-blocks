@@ -207,6 +207,10 @@ returns raw link string (without [[ ]] brackets).
 Populated via `org-transclusion-blocks-register-type'.
 Used by `org-transclusion-blocks--construct-link'.")
 
+(defvar-local org-transclusion-blocks--last-payload nil
+  "Cached payload from most recent content fetch.
+Used by metadata application to avoid re-fetching.")
+
 ;;;; Block Type Support
 
 (defun org-transclusion-blocks--source-is-org-p (link-string)
@@ -1290,6 +1294,7 @@ KEYWORD-PLIST is org-transclusion keyword plist.
 Returns content string or nil.
 
 Delegates to `org-transclusion-add-functions' hook.
+Caches payload in `org-transclusion-blocks--last-payload'.
 
 Called by `org-transclusion-blocks-add'."
   (when-let* ((link-string (plist-get keyword-plist :link))
@@ -1298,6 +1303,7 @@ Called by `org-transclusion-blocks-add'."
                         'org-transclusion-add-functions
                         link
                         keyword-plist)))
+    (setq org-transclusion-blocks--last-payload payload)
     (plist-get payload :src-content)))
 
 ;;;; Metadata insertion
@@ -1308,19 +1314,76 @@ KEYWORD-PLIST is the org-transclusion keyword plist.
 LINK-STRING is the constructed link string (with [[ ]] brackets).
 
 Stores metadata for boundary checking and debugging.
+Creates minimal overlays for org-transclusion.el compatibility.
 
 Properties stored:
 - `org-transclusion-blocks-keyword' - Full keyword plist
 - `org-transclusion-blocks-link' - Constructed link string
 - `org-transclusion-blocks-max-line' - Source buffer line count
+- `org-transclusion-pair' - Source overlay for open-source
+- `org-transclusion-type' - Type for hook dispatch
 
 Called by `org-transclusion-blocks-add'."
-  (let ((max-line (org-transclusion-blocks--get-source-line-count link-string)))
-    (add-text-properties
-     beg end
-     `(org-transclusion-blocks-keyword ,keyword-plist
-       org-transclusion-blocks-link ,link-string
-       org-transclusion-blocks-max-line ,max-line))))
+  (let* ((max-line (org-transclusion-blocks--get-source-line-count link-string))
+         (payload (org-transclusion-blocks--get-payload-for-metadata link-string keyword-plist))
+         (src-beg (plist-get payload :src-beg))
+         (src-end (plist-get payload :src-end))
+         (src-buf (plist-get payload :src-buf))
+         (tc-type (plist-get payload :tc-type)))
+
+    ;; Create source overlay if we have source buffer info
+    (when (and src-beg src-end src-buf)
+      (let* ((id (org-id-uuid))
+             (tc-buffer (current-buffer))
+             (ov-src (make-overlay src-beg src-end src-buf))
+             (ov-tc (make-overlay beg end)))
+
+        ;; Configure source overlay
+        (overlay-put ov-src 'org-transclusion-by id)
+        (overlay-put ov-src 'org-transclusion-buffer tc-buffer)
+        (overlay-put ov-src 'evaporate t)
+        (overlay-put ov-src 'org-transclusion-pair ov-tc)
+
+        ;; Configure transclusion overlay (minimal, no visual effects)
+        (overlay-put ov-tc 'evaporate t)
+        (overlay-put ov-tc 'org-transclusion-pair ov-src)
+
+        ;; Apply text properties including org-transclusion compatibility
+        (add-text-properties
+         beg end
+         `(org-transclusion-blocks-keyword ,keyword-plist
+           org-transclusion-blocks-link ,link-string
+           org-transclusion-blocks-max-line ,max-line
+           org-transclusion-pair ,ov-src
+           org-transclusion-type ,tc-type
+           org-transclusion-id ,id))))
+
+    ;; Fallback: store metadata without overlays if payload incomplete
+    (unless (and src-beg src-end src-buf)
+      (add-text-properties
+       beg end
+       `(org-transclusion-blocks-keyword ,keyword-plist
+         org-transclusion-blocks-link ,link-string
+         org-transclusion-blocks-max-line ,max-line)))))
+
+(defun org-transclusion-blocks--get-payload-for-metadata (link-string keyword-plist)
+  "Obtain payload for metadata storage from LINK-STRING and KEYWORD-PLIST.
+
+LINK-STRING is complete link including [[ ]] brackets.
+KEYWORD-PLIST is org-transclusion keyword plist.
+
+Returns payload plist with :src-beg, :src-end, :src-buf, :tc-type.
+
+This is a lightweight call to org-transclusion-add-functions
+solely for metadata extraction, not content fetching.
+
+Called by `org-transclusion-blocks--apply-metadata'."
+  (or org-transclusion-blocks--last-payload
+      (when-let* ((link (org-transclusion-wrap-path-to-link link-string)))
+        (run-hook-with-args-until-success
+         'org-transclusion-add-functions
+         link
+         keyword-plist))))
 
 (defun org-transclusion-blocks--get-source-line-count (link-string)
   "Return line count of buffer targeted by LINK-STRING.
