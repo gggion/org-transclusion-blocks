@@ -462,17 +462,17 @@ Errors if end would go below start."
 All commands accept prefix argument for custom increment.
 Default increment is `org-transclusion-blocks-lines-default-increment'.
 
-Suppresses overlay and metadata application during adjustment
-via `org-transclusion-blocks--suppress-metadata' to improve
-performance. Metadata is applied once on menu exit."
+Suppresses overlay creation during adjustment via
+`org-transclusion-blocks--suppress-overlays' to improve
+performance.  Overlays are created once on menu exit."
   (interactive)
   ;; Set suppression flag before entering transient
-  (setq org-transclusion-blocks--suppress-metadata t)
+  (setq org-transclusion-blocks--suppress-overlays t)
 
   ;; Add exit hook for this buffer only
   (let ((cleanup-hook
          (lambda ()
-           (org-transclusion-blocks--ensure-metadata-applied)
+           (org-transclusion-blocks--ensure-overlays-applied)
            (remove-hook 'transient-exit-hook cleanup-hook t))))
     (add-hook 'transient-exit-hook cleanup-hook nil t))
 
