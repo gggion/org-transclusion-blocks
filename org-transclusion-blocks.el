@@ -1321,15 +1321,38 @@ Called by `org-transclusion-blocks-add'."
     (plist-get payload :src-content)))
 
 ;;;; Metadata insertion
-(defun org-transclusion-blocks--apply-metadata (block-beg block-end keyword-plist link-string)
-  "Apply transclusion metadata properties to block region BLOCK-BEG to BLOCK-END.
+(defun org-transclusion-blocks--find-existing-overlay (beg end)
+  "Find existing transclusion overlay in region BEG to END.
 
-BLOCK-BEG is beginning of entire block including delimiters.
-BLOCK-END is end of entire block including delimiters.
+Returns overlay with `org-transclusion-blocks-overlay' property
+or nil if none exists.
+
+Used by `org-transclusion-blocks--apply-metadata' to reuse
+overlays across content updates."
+  (seq-find
+   (lambda (ov)
+     (overlay-get ov 'org-transclusion-blocks-overlay))
+   (overlays-in beg end)))
+
+(defun org-transclusion-blocks--get-or-create-id (beg end)
+  "Return existing transclusion ID for region BEG to END or create new one.
+
+Checks text properties in region for existing `org-transclusion-id'.
+If found, returns that ID to maintain stability across updates.
+Otherwise generates new UUID.
+
+ID stability is critical for org-transclusion.el integration—
+changing IDs on every update breaks source overlay pairing."
+  (or (get-text-property beg 'org-transclusion-id)
+      (org-id-uuid)))
+
+(defun org-transclusion-blocks--apply-metadata (beg end keyword-plist link-string)
+  "Apply transclusion metadata properties to region BEG to END.
+
 KEYWORD-PLIST is the org-transclusion keyword plist.
 LINK-STRING is the constructed link string (with [[ ]] brackets).
 
-Stores metadata for boundary checking and debugging.
+Reuses existing overlays and IDs when present to prevent accumulation.
 Creates minimal overlays for org-transclusion.el compatibility.
 
 Properties stored:
@@ -1338,12 +1361,7 @@ Properties stored:
 - `org-transclusion-blocks-max-line' - Source buffer line count
 - `org-transclusion-pair' - Source overlay for open-source
 - `org-transclusion-type' - Type for hook dispatch
-- `org-transclusion-id' - Unique transclusion identifier
-
-Properties applied to entire block region (including #+HEADER:,
-\"#+begin_src\", and \"#+end_src\" lines) to ensure
-`org-transclusion-at-point' from org-transclusion.el can locate
-transclusion boundaries during save-buffer hooks.
+- `org-transclusion-id' - Stable UUID for overlay pairing
 
 Called by `org-transclusion-blocks-add'."
   (let* ((max-line (org-transclusion-blocks--get-source-line-count link-string))
@@ -1353,12 +1371,18 @@ Called by `org-transclusion-blocks-add'."
          (src-buf (plist-get payload :src-buf))
          (tc-type (plist-get payload :tc-type)))
 
-    ;; Create source overlay if we have source buffer info
+    ;; Create or reuse overlays if we have source buffer info
     (when (and src-beg src-end src-buf)
-      (let* ((id (org-id-uuid))
+      (let* ((id (org-transclusion-blocks--get-or-create-id beg end))
              (tc-buffer (current-buffer))
-             (ov-src (make-overlay src-beg src-end src-buf))
-             (ov-tc (make-overlay block-beg block-end)))
+             ;; Reuse existing overlays or create new ones
+             (ov-tc (or (org-transclusion-blocks--find-existing-overlay beg end)
+                        (make-overlay beg end)))
+             ;; Source overlay must be recreated if source region changed
+             (ov-src (make-overlay src-beg src-end src-buf)))
+
+        ;; Mark transclusion overlay for identification
+        (overlay-put ov-tc 'org-transclusion-blocks-overlay t)
 
         ;; Configure source overlay
         (overlay-put ov-src 'org-transclusion-by id)
@@ -1370,23 +1394,26 @@ Called by `org-transclusion-blocks-add'."
         (overlay-put ov-tc 'evaporate t)
         (overlay-put ov-tc 'org-transclusion-pair ov-src)
 
-        ;; Apply text properties to entire block region
+        ;; Move overlay to new region if it existed
+        (move-overlay ov-tc beg end)
+
+        ;; Apply text properties including org-transclusion compatibility
         (add-text-properties
-         block-beg block-end
+         beg end
          `(org-transclusion-blocks-keyword ,keyword-plist
-           org-transclusion-blocks-link ,link-string
-           org-transclusion-blocks-max-line ,max-line
-           org-transclusion-pair ,ov-src
-           org-transclusion-type ,tc-type
-           org-transclusion-id ,id))))
+                                           org-transclusion-blocks-link ,link-string
+                                           org-transclusion-blocks-max-line ,max-line
+                                           org-transclusion-pair ,ov-src
+                                           org-transclusion-type ,tc-type
+                                           org-transclusion-id ,id))))
 
     ;; Fallback: store metadata without overlays if payload incomplete
     (unless (and src-beg src-end src-buf)
       (add-text-properties
-       block-beg block-end
+       beg end
        `(org-transclusion-blocks-keyword ,keyword-plist
-         org-transclusion-blocks-link ,link-string
-         org-transclusion-blocks-max-line ,max-line)))))
+                                         org-transclusion-blocks-link ,link-string
+                                         org-transclusion-blocks-max-line ,max-line)))))
 
 (defun org-transclusion-blocks--get-payload-for-metadata (link-string keyword-plist)
   "Obtain payload for metadata storage from LINK-STRING and KEYWORD-PLIST.
