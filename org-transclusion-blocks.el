@@ -211,6 +211,20 @@ Used by `org-transclusion-blocks--construct-link'.")
   "Cached payload from most recent content fetch.
 Used by metadata application to avoid re-fetching.")
 
+(defvar org-transclusion-blocks-yank-excluded-properties
+  '(org-transclusion-blocks-keyword
+    org-transclusion-blocks-link
+    org-transclusion-blocks-max-line
+    org-transclusion-blocks-fetched)
+  "Text properties excluded from yank operations.
+
+These properties are implementation details for org-transclusion-blocks
+and should not propagate when users copy transcluded content.
+
+Unlike org-transclusion.el, we apply this exclusion permanently rather
+than during activation/deactivation cycles, since block transclusions
+are one-shot operations without a deactivation phase.")
+
 ;;;; Block Type Support
 
 (defun org-transclusion-blocks--source-is-org-p (link-string)
@@ -1747,6 +1761,18 @@ specific types."
                                       component-count
                                       (if (= component-count 1) "" "s"))))))
     (message "No types registered")))
+
+(defun org-transclusion-blocks--ensure-yank-exclusions ()
+  "Add transclusion properties to `yank-excluded-properties' if missing.
+
+This function is idempotent and safe to call multiple times.
+It preserves any existing exclusions while adding our properties."
+  (dolist (prop org-transclusion-blocks-yank-excluded-properties)
+    (unless (memq prop yank-excluded-properties)
+      (push prop yank-excluded-properties))))
+
+;; Install exclusions at load time
+(org-transclusion-blocks--ensure-yank-exclusions)
 
 (provide 'org-transclusion-blocks)
 ;;; org-transclusion-blocks.el ends here
