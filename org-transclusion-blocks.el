@@ -1307,9 +1307,11 @@ Called by `org-transclusion-blocks-add'."
     (plist-get payload :src-content)))
 
 ;;;; Metadata insertion
-(defun org-transclusion-blocks--apply-metadata (beg end keyword-plist link-string)
-  "Apply transclusion metadata properties to region BEG to END.
+(defun org-transclusion-blocks--apply-metadata (block-beg block-end keyword-plist link-string)
+  "Apply transclusion metadata properties to block region BLOCK-BEG to BLOCK-END.
 
+BLOCK-BEG is beginning of entire block including delimiters.
+BLOCK-END is end of entire block including delimiters.
 KEYWORD-PLIST is the org-transclusion keyword plist.
 LINK-STRING is the constructed link string (with [[ ]] brackets).
 
@@ -1322,6 +1324,12 @@ Properties stored:
 - `org-transclusion-blocks-max-line' - Source buffer line count
 - `org-transclusion-pair' - Source overlay for open-source
 - `org-transclusion-type' - Type for hook dispatch
+- `org-transclusion-id' - Unique transclusion identifier
+
+Properties applied to entire block region (including #+HEADER:,
+\"#+begin_src\", and \"#+end_src\" lines) to ensure
+`org-transclusion-at-point' from org-transclusion.el can locate
+transclusion boundaries during save-buffer hooks.
 
 Called by `org-transclusion-blocks-add'."
   (let* ((max-line (org-transclusion-blocks--get-source-line-count link-string))
@@ -1336,7 +1344,7 @@ Called by `org-transclusion-blocks-add'."
       (let* ((id (org-id-uuid))
              (tc-buffer (current-buffer))
              (ov-src (make-overlay src-beg src-end src-buf))
-             (ov-tc (make-overlay beg end)))
+             (ov-tc (make-overlay block-beg block-end)))
 
         ;; Configure source overlay
         (overlay-put ov-src 'org-transclusion-by id)
@@ -1348,9 +1356,9 @@ Called by `org-transclusion-blocks-add'."
         (overlay-put ov-tc 'evaporate t)
         (overlay-put ov-tc 'org-transclusion-pair ov-src)
 
-        ;; Apply text properties including org-transclusion compatibility
+        ;; Apply text properties to entire block region
         (add-text-properties
-         beg end
+         block-beg block-end
          `(org-transclusion-blocks-keyword ,keyword-plist
            org-transclusion-blocks-link ,link-string
            org-transclusion-blocks-max-line ,max-line
@@ -1361,7 +1369,7 @@ Called by `org-transclusion-blocks-add'."
     ;; Fallback: store metadata without overlays if payload incomplete
     (unless (and src-beg src-end src-buf)
       (add-text-properties
-       beg end
+       block-beg block-end
        `(org-transclusion-blocks-keyword ,keyword-plist
          org-transclusion-blocks-link ,link-string
          org-transclusion-blocks-max-line ,max-line)))))
@@ -1500,6 +1508,13 @@ Stores metadata in text properties for boundary checking:
 - `org-transclusion-blocks-keyword' - keyword plist
 - `org-transclusion-blocks-link' - constructed link
 - `org-transclusion-blocks-max-line' - source line count
+- `org-transclusion-id' - unique identifier
+- `org-transclusion-type' - transclusion type
+- `org-transclusion-pair' - source overlay
+
+Properties applied to entire block region (including headers and
+delimiters) to ensure compatibility with `org-transclusion-at-point'
+from org-transclusion.el during save-buffer hooks.
 
 See `org-transclusion-blocks-list-types' for available types.
 
@@ -1544,12 +1559,14 @@ Returns t on success, nil if no headers or fetch failed."
 
                     (setq element (org-element-at-point))
                     (let* ((bounds (org-transclusion-blocks--get-content-bounds element))
-                           (beg (car bounds))
-                           (end (cdr bounds)))
-                      ;; Apply timestamp
-                      (org-transclusion-blocks--apply-timestamp beg end)
-                      ;; Apply metadata for boundary checking
-                      (org-transclusion-blocks--apply-metadata beg end keyword-plist link-string))
+                           (content-beg (car bounds))
+                           (content-end (cdr bounds))
+                           (block-beg (org-element-property :begin element))
+                           (block-end (org-element-property :end element)))
+                      ;; Apply timestamp to content only
+                      (org-transclusion-blocks--apply-timestamp content-beg content-end)
+                      ;; Apply metadata to entire block for org-transclusion.el compatibility
+                      (org-transclusion-blocks--apply-metadata block-beg block-end keyword-plist link-string))
 
                     (org-transclusion-blocks--show-indicator element)
                     (message "Transclusion content inserted into %s block" type)
