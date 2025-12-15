@@ -225,6 +225,22 @@ Unlike org-transclusion.el, we apply this exclusion permanently rather
 than during activation/deactivation cycles, since block transclusions
 are one-shot operations without a deactivation phase.")
 
+(defvar-local org-transclusion-blocks--suppress-metadata nil
+  "When non-nil, skip overlay and metadata application.
+
+Set by transient menus during interactive range adjustment to
+avoid expensive overlay operations on every incremental change.
+
+Cleared by `org-transclusion-blocks--ensure-metadata-applied'
+after transient exits.")
+
+(defvar-local org-transclusion-blocks--cached-keyword-plist nil
+  "Cached keyword plist from last successful transclusion.
+
+Cons cell of (PARAMS-HASH . PLIST) where PARAMS-HASH is the
+hash of the parameters used to construct PLIST.  Invalidated
+when parameters change or suppression ends.")
+
 ;;;; Block Type Support
 
 (defun org-transclusion-blocks--source-is-org-p (link-string)
@@ -1174,6 +1190,17 @@ Returns list of positions where conversions occurred."
 
 
 ;;;; Link Construction
+(defun org-transclusion-blocks--params-hash (params)
+  "Generate hash of PARAMS for cache validation.
+
+Only hashes parameters that affect link construction, excluding
+result-handling parameters that don't impact content fetching."
+  (sxhash-equal
+   (seq-filter
+    (lambda (pair)
+      (not (memq (car pair)
+                 '(:result-params :result-type :exports :cache))))
+    params)))
 
 (defun org-transclusion-blocks--construct-link (params)
   "Construct org link from component headers in PARAMS.
@@ -1254,6 +1281,31 @@ Called by `org-transclusion-blocks--params-to-plist'."
                          (not (string-empty-p (string-trim cleaned-keywords))))
                 (format " %s" (org-strip-quotes cleaned-keywords)))))))
 
+
+(defun org-transclusion-blocks--get-keyword-plist (params force-rebuild)
+  "Get keyword plist from PARAMS, using cache when appropriate.
+
+When FORCE-REBUILD is nil and
+`org-transclusion-blocks--suppress-metadata' is non-nil, checks
+if cached plist exists and PARAMS hash matches cached hash.  If
+so, returns cached plist.  Otherwise constructs new plist.
+
+When FORCE-REBUILD is non-nil or cache is invalid, constructs
+new plist via `org-transclusion-blocks--params-to-plist' and
+caches result with current PARAMS hash."
+  (let ((current-hash (org-transclusion-blocks--params-hash params)))
+    (if (and (not force-rebuild)
+             org-transclusion-blocks--suppress-metadata
+             org-transclusion-blocks--cached-keyword-plist
+             (equal current-hash (car org-transclusion-blocks--cached-keyword-plist)))
+        ;; Cache hit: return cached plist
+        (cdr org-transclusion-blocks--cached-keyword-plist)
+      ;; Cache miss: rebuild and cache
+      (let ((plist (org-transclusion-blocks--params-to-plist params)))
+        (setq org-transclusion-blocks--cached-keyword-plist
+              (cons current-hash plist))
+        plist))))
+
 (defun org-transclusion-blocks--params-to-plist (params)
   "Convert PARAMS alist to org-transclusion keyword plist.
 
@@ -1321,6 +1373,31 @@ Called by `org-transclusion-blocks-add'."
     (plist-get payload :src-content)))
 
 ;;;; Metadata insertion
+(defun org-transclusion-blocks--ensure-metadata-applied ()
+  "Apply pending metadata if suppression was active.
+
+Called after transient menu exits to finalize metadata for the
+current transclusion after interactive adjustment completes.
+
+Clears cached keyword plist to force rebuild on next operation."
+  (when org-transclusion-blocks--suppress-metadata
+    (setq org-transclusion-blocks--suppress-metadata nil)
+    (setq org-transclusion-blocks--cached-keyword-plist nil)  ; Invalidate cache
+    (save-excursion
+      (let ((element (org-element-at-point)))
+        (when (org-transclusion-blocks--supported-block-p element)
+          (let* ((bounds (org-transclusion-blocks--get-content-bounds element))
+                 (beg (car bounds))
+                 (end (cdr bounds))
+                 (params (if (eq (org-element-type element) 'src-block)
+                             (nth 2 (org-babel-get-src-block-info))
+                           (org-transclusion-blocks--parse-headers-direct element)))
+                 (keyword-plist (org-transclusion-blocks--get-keyword-plist params t))
+                 (link-string (plist-get keyword-plist :link)))
+            (when (and beg end link-string)
+              (org-transclusion-blocks--apply-timestamp beg end)
+              (org-transclusion-blocks--apply-metadata beg end keyword-plist link-string))))))))
+
 (defun org-transclusion-blocks--find-existing-overlay (beg end)
   "Find existing transclusion overlay in region BEG to END.
 
@@ -1549,13 +1626,11 @@ Stores metadata in text properties for boundary checking:
 - `org-transclusion-blocks-keyword' - keyword plist
 - `org-transclusion-blocks-link' - constructed link
 - `org-transclusion-blocks-max-line' - source line count
-- `org-transclusion-id' - unique identifier
-- `org-transclusion-type' - transclusion type
-- `org-transclusion-pair' - source overlay
 
-Properties applied to entire block region (including headers and
-delimiters) to ensure compatibility with `org-transclusion-at-point'
-from org-transclusion.el during save-buffer hooks.
+When `org-transclusion-blocks--suppress-metadata' is non-nil,
+skips overlay and metadata application.  Uses cached keyword
+plist when parameters haven't changed to avoid expensive temp
+buffer creation.
 
 See `org-transclusion-blocks-list-types' for available types.
 
@@ -1578,8 +1653,8 @@ Returns t on success, nil if no headers or fetch failed."
         (let* ((params (if (eq type 'src-block)
                            (nth 2 (org-babel-get-src-block-info))
                          (org-transclusion-blocks--parse-headers-direct element)))
-
-               (keyword-plist (org-transclusion-blocks--params-to-plist params)))
+               ;; Use cached plist during suppression if params unchanged
+               (keyword-plist (org-transclusion-blocks--get-keyword-plist params nil)))
 
           (org-transclusion-blocks--check-mode-compat params)
 
@@ -1600,14 +1675,12 @@ Returns t on success, nil if no headers or fetch failed."
 
                     (setq element (org-element-at-point))
                     (let* ((bounds (org-transclusion-blocks--get-content-bounds element))
-                           (content-beg (car bounds))
-                           (content-end (cdr bounds))
-                           (block-beg (org-element-property :begin element))
-                           (block-end (org-element-property :end element)))
-                      ;; Apply timestamp to content only
-                      (org-transclusion-blocks--apply-timestamp content-beg content-end)
-                      ;; Apply metadata to entire block for org-transclusion.el compatibility
-                      (org-transclusion-blocks--apply-metadata block-beg block-end keyword-plist link-string))
+                           (beg (car bounds))
+                           (end (cdr bounds)))
+                      ;; Apply timestamp and metadata only if not suppressed
+                      (unless org-transclusion-blocks--suppress-metadata
+                        (org-transclusion-blocks--apply-timestamp beg end)
+                        (org-transclusion-blocks--apply-metadata beg end keyword-plist link-string)))
 
                     (org-transclusion-blocks--show-indicator element)
                     (message "Transclusion content inserted into %s block" type)

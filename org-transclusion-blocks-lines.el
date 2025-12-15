@@ -456,12 +456,33 @@ Errors if end would go below start."
       (org-transclusion-blocks-lines--update-range start new-end))))
 
 ;;;; Transient Menu
-
-(transient-define-prefix org-transclusion-blocks-lines-menu ()
+(defun org-transclusion-blocks-lines-menu ()
   "Adjust line range for transclusion at point.
 
 All commands accept prefix argument for custom increment.
-Default increment is `org-transclusion-blocks-lines-default-increment'."
+Default increment is `org-transclusion-blocks-lines-default-increment'.
+
+Suppresses overlay and metadata application during adjustment
+via `org-transclusion-blocks--suppress-metadata' to improve
+performance. Metadata is applied once on menu exit."
+  (interactive)
+  ;; Set suppression flag before entering transient
+  (setq org-transclusion-blocks--suppress-metadata t)
+
+  ;; Add exit hook for this buffer only
+  (let ((cleanup-hook
+         (lambda ()
+           (org-transclusion-blocks--ensure-metadata-applied)
+           (remove-hook 'transient-exit-hook cleanup-hook t))))
+    (add-hook 'transient-exit-hook cleanup-hook nil t))
+
+  ;; Enter the transient menu
+  (transient-setup 'org-transclusion-blocks-lines-menu-impl))
+
+(transient-define-prefix org-transclusion-blocks-lines-menu-impl ()
+  "Implementation of line range adjustment menu.
+
+Do not call directly; use `org-transclusion-blocks-lines-menu'."
   :refresh-suffixes t
 
   ["Current Range"
