@@ -455,6 +455,16 @@ Errors if end would go below start."
                     new-end start))
       (org-transclusion-blocks-lines--update-range start new-end))))
 
+;;;; Helper functions
+
+(defun org-transclusion-blocks--lines-menu-cleanup ()
+  "Cleanup function for lines menu transient exit.
+Applies overlays and removes itself from hook."
+  (org-transclusion-blocks--ensure-overlays-applied)
+  (remove-hook 'transient-exit-hook
+               #'org-transclusion-blocks--lines-menu-cleanup
+               t))
+
 ;;;; Transient Menu
 (defun org-transclusion-blocks-lines-menu ()
   "Adjust line range for transclusion at point.
@@ -470,11 +480,9 @@ performance.  Overlays are created once on menu exit."
   (setq org-transclusion-blocks--suppress-overlays t)
 
   ;; Add exit hook for this buffer only
-  (let ((cleanup-hook
-         (lambda ()
-           (org-transclusion-blocks--ensure-overlays-applied)
-           (remove-hook 'transient-exit-hook cleanup-hook t))))
-    (add-hook 'transient-exit-hook cleanup-hook nil t))
+  (add-hook 'transient-exit-hook
+            #'org-transclusion-blocks--lines-menu-cleanup
+            nil t)
 
   ;; Enter the transient menu
   (transient-setup 'org-transclusion-blocks-lines-menu-impl))

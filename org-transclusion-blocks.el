@@ -58,7 +58,7 @@
 ;; `org-transclusion-blocks-escape-org-sources'.  Override per-block with
 ;; :transclude-escape-org header or set file/subtree defaults via
 ;; #+PROPERTY: header-args.
-;; 
+;;
 ;; ;; Converting existing transclusions:
 ;;
 ;; Existing #+transclude: keywords can be converted to header form:
@@ -1595,10 +1595,11 @@ Called by `org-transclusion-blocks-add'."
                                 ov)))
         (overlay-put ov 'org-transclusion-blocks-timer timer))))
 
-  (when org-transclusion-blocks--last-fetch-time
-    (message "Content fetched at %s"
-             (format-time-string "%H:%M:%S"
-                                 org-transclusion-blocks--last-fetch-time))))
+  ;; (when org-transclusion-blocks--last-fetch-time
+  ;; (message "Content fetched at %s"
+  ;;          (format-time-string "%H:%M:%S"
+  ;;                              org-transclusion-blocks--last-fetch-time)))
+  )
 
 ;;;; Public Commands
 
@@ -1691,13 +1692,13 @@ Returns t on success, nil if no headers or fetch failed."
                       ;; Force re-parse by moving to block start and getting fresh element
                       (goto-char block-start)
                       (setq element (org-element-at-point))
-                      
+
                       (let* ((bounds (org-transclusion-blocks--get-content-bounds element))
                              (content-beg (car bounds))
                              (content-end (cdr bounds))
                              (block-beg (org-element-property :begin element))
                              (block-end (org-element-property :end element)))
-                        
+
                         ;; Verify we got valid boundaries
                         (unless (and block-beg block-end content-beg content-end
                                      (< block-beg content-beg)
@@ -1705,14 +1706,14 @@ Returns t on success, nil if no headers or fetch failed."
                                      (< content-end block-end))
                           (error "Invalid block boundaries after content insertion: block[%s-%s] content[%s-%s]"
                                  block-beg block-end content-beg content-end))
-                        
+
                         ;; Always apply timestamp to content
                         (org-transclusion-blocks--apply-timestamp content-beg content-end)
                         ;; Always apply metadata (properties immediately, overlays conditionally)
                         (org-transclusion-blocks--apply-metadata block-beg block-end keyword-plist link-string))
 
                       (org-transclusion-blocks--show-indicator element)
-                      (message "Transclusion content inserted into %s block" type)
+                      ;; (message "Transclusion content inserted into %s block" type)
                       t))
 
                 (message "Failed to fetch transclusion content")
