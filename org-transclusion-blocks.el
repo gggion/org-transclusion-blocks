@@ -1337,13 +1337,14 @@ Caches payload in `org-transclusion-blocks--last-payload'.
 
 Called by `org-transclusion-blocks-add'."
   (when-let* ((link-string (plist-get keyword-plist :link))
-              (link (org-transclusion-wrap-path-to-link link-string))
-              (payload (run-hook-with-args-until-success
-                        'org-transclusion-add-functions
-                        link
-                        keyword-plist)))
-    (setq org-transclusion-blocks--last-payload payload)
-    (plist-get payload :src-content)))
+              (link (org-transclusion-wrap-path-to-link link-string)))
+    (save-window-excursion
+      (when-let* ((payload (run-hook-with-args-until-success
+                            'org-transclusion-add-functions
+                            link
+                            keyword-plist)))
+        (setq org-transclusion-blocks--last-payload payload)
+        (plist-get payload :src-content)))))
 
 ;;;; Metadata insertion
 (defun org-transclusion-blocks--find-existing-overlay (beg end)
