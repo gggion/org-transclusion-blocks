@@ -212,6 +212,18 @@ after transient exits.
 
 Cleared by `org-transclusion-blocks--ensure-overlays-applied'.")
 
+(defvar-local org-transclusion-blocks--undo-handle nil
+  "Change group handle for transient menu undo consolidation.
+
+Set by `org-transclusion-blocks-lines-menu' when entering the
+transient menu.  Cleared by cleanup function on exit.
+
+Used by `org-transclusion-blocks--apply-metadata' to determine
+whether to suppress text property undo entries.  When non-nil,
+text property changes are not recorded in undo list to prevent
+undo corruption when undoing/redoing content changes.
+
+See Info node `(elisp)Atomic Changes' for change group protocol.")
 ;;;; Block Type Support
 
 (defun org-transclusion-blocks--source-is-org-p (link-string)
@@ -1014,6 +1026,11 @@ Always applies text properties immediately for metadata tracking.
 Creates overlays only when `org-transclusion-blocks--suppress-overlays'
 is nil.
 
+When `org-transclusion-blocks--undo-handle' is non-nil (during
+transient menu), text property changes are not recorded in undo
+list to prevent undo corruption when undoing/redoing content
+changes.
+
 Properties stored:
 - `org-transclusion-blocks-keyword' - Full keyword plist
 - `org-transclusion-blocks-link' - Constructed link string
@@ -1035,9 +1052,12 @@ Called by `org-transclusion-blocks-add'."
          (src-buf (plist-get payload :src-buf))
          (tc-type (plist-get payload :tc-type))
          (id (or (get-text-property block-beg 'org-transclusion-id)
-                 (org-id-uuid))))
+                 (org-id-uuid)))
+         ;; Save undo list position before text property changes
+         (undo-list-before (when org-transclusion-blocks--undo-handle
+                             buffer-undo-list)))
 
-    ;; Always apply text properties immediately
+    ;; Apply text properties
     (if (and src-beg src-end src-buf)
         ;; Full metadata with source info
         (add-text-properties
@@ -1053,6 +1073,10 @@ Called by `org-transclusion-blocks-add'."
        `(org-transclusion-blocks-keyword ,keyword-plist
          org-transclusion-blocks-link ,link-string
          org-transclusion-blocks-max-line ,max-line)))
+
+    ;; Remove text property undo entries during transient menu
+    (when org-transclusion-blocks--undo-handle
+      (setq buffer-undo-list undo-list-before))
 
     ;; Create overlays only when not suppressed
     (unless org-transclusion-blocks--suppress-overlays

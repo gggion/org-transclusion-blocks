@@ -41,6 +41,10 @@
 (require 'org-transclusion-blocks)
 (require 'transient)
 
+
+;;;; Compiler Declarations
+(defvar org-transclusion-blocks--undo-handle)  ; Defined in org-transclusion-blocks.el
+
 ;;;; Customization
 
 (defgroup org-transclusion-blocks-lines nil
@@ -54,6 +58,7 @@
 Used when no prefix argument provided to transient suffixes."
   :type 'integer
   :group 'org-transclusion-blocks-lines)
+
 
 ;;;; Range Validation
 
@@ -458,11 +463,27 @@ Errors if end would go below start."
 ;;;; Helper functions
 (defun org-transclusion-blocks--lines-menu-cleanup ()
   "Cleanup function for lines menu transient exit.
-Applies overlays and removes itself from hook."
-  (org-transclusion-blocks--ensure-overlays-applied)
-  (remove-hook 'transient-exit-hook
-               #'org-transclusion-blocks--lines-menu-cleanup
-               t))
+
+Consolidates undo history, applies overlays, and removes itself
+from hook.
+
+Called after transient exits to finalize all changes made during
+interactive adjustment as a single undo unit."
+  (unwind-protect
+      (progn
+        ;; Consolidate undo history if handle exists
+        (when org-transclusion-blocks--undo-handle
+          (accept-change-group org-transclusion-blocks--undo-handle)
+          (undo-amalgamate-change-group org-transclusion-blocks--undo-handle)
+          (setq org-transclusion-blocks--undo-handle nil))
+
+        ;; Apply overlays
+        (org-transclusion-blocks--ensure-overlays-applied))
+
+    ;; Always remove hook
+    (remove-hook 'transient-exit-hook
+                 #'org-transclusion-blocks--lines-menu-cleanup
+                 t)))
 
 ;;;; Transient Menu
 
@@ -475,18 +496,29 @@ Default increment is `org-transclusion-blocks-lines-default-increment'.
 
 Suppresses overlay creation during adjustment via
 `org-transclusion-blocks--suppress-overlays' to improve
-performance.  Overlays are created once on menu exit."
+performance.  Overlays are created once on menu exit.
+
+All changes made during menu interaction are amalgamated into
+a single undo step using the change group protocol."
   (interactive)
-  ;; Set suppression flag before entering transient
-  (setq org-transclusion-blocks--suppress-overlays t)
 
-  ;; Add exit hook for this buffer only
-  (add-hook 'transient-exit-hook
-            #'org-transclusion-blocks--lines-menu-cleanup
-            nil t)
+  ;; Prepare change group for undo consolidation
+  (let ((handle (prepare-change-group)))
+    (setq org-transclusion-blocks--undo-handle handle)
 
-  ;; Enter the transient menu
-  (transient-setup 'org-transclusion-blocks-lines-menu-impl))
+    ;; Activate the change group
+    (activate-change-group handle)
+
+    ;; Set suppression flag before entering transient
+    (setq org-transclusion-blocks--suppress-overlays t)
+
+    ;; Add exit hook for this buffer only
+    (add-hook 'transient-exit-hook
+              #'org-transclusion-blocks--lines-menu-cleanup
+              nil t)
+
+    ;; Enter the transient menu
+    (transient-setup 'org-transclusion-blocks-lines-menu-impl)))
 
 (transient-define-prefix org-transclusion-blocks-lines-menu-impl ()
   "Implementation of line range adjustment menu.
