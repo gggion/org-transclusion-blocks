@@ -456,7 +456,6 @@ Errors if end would go below start."
       (org-transclusion-blocks-lines--update-range start new-end))))
 
 ;;;; Helper functions
-
 (defun org-transclusion-blocks--lines-menu-cleanup ()
   "Cleanup function for lines menu transient exit.
 Applies overlays and removes itself from hook."
@@ -466,6 +465,8 @@ Applies overlays and removes itself from hook."
                t))
 
 ;;;; Transient Menu
+
+;;;###autoload
 (defun org-transclusion-blocks-lines-menu ()
   "Adjust line range for transclusion at point.
 
