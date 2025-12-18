@@ -7,28 +7,43 @@
 ;;; Code:
 (require 'org-transclusion-blocks)
 
-(defun org-transclusion-blocks--orgit-file-validate-search (value header-key type)
-  "Validate :orgit-search value for orgit-file links.
+(defun org-transclusion-blocks--orgit-file-validate-search-syntax (value header-key type)
+  "Validate :orgit-search syntax for Babel parsing safety.
 
-VALUE is header value string.
+VALUE is header value string (may contain $varname).
 HEADER-KEY is :orgit-search.
 TYPE is \\='orgit-file.
 
-Accepts strings or complete s-expressions.
+Checks if VALUE will parse correctly in Babel.  Accepts:
+- Variable references: $varname
+- Quoted strings: \"(defun name\"
+- Complete s-expressions: (defun name ...)
+
 Signals user-error for incomplete sexps that will cause Babel errors.
 
-Returns VALUE unchanged if valid.
+This is a :validator-pre - runs BEFORE variable expansion.
 
-This is user-defined validation - not framework behavior."
+Returns VALUE unchanged if valid."
   (cond
-   ;; Already quoted string or doesn't look like sexp - pass through
+   ;; Variable reference - will be expanded, skip syntax check
    ((and (stringp value)
-         (or (string-prefix-p "\"" value)
-             (not (string-prefix-p "(" value))))
+         (or (string-prefix-p "$" value)
+             (string-match-p (rx "$" (+ (any "a-z" "A-Z" "0-9" "-" "_"))) value)))
+    value)
+
+   ;; Already quoted string - safe
+   ((and (stringp value)
+         (string-prefix-p "\"" value))
+    value)
+
+   ;; Doesn't look like sexp - safe
+   ((and (stringp value)
+         (not (string-prefix-p "(" value)))
     value)
 
    ;; Looks like sexp - check if complete
-   ((and (stringp value) (string-prefix-p "(" value))
+   ((and (stringp value)
+         (string-prefix-p "(" value))
     (condition-case err
         (progn
           (read-from-string value)
@@ -41,10 +56,34 @@ This is user-defined validation - not framework behavior."
                             (error-message-string err))
                     value
                     (format "Quote it as string: \"(%s\"" (substring value 1))
-                    "Or complete the s-expression syntax")))))
+                    "Or complete the s-expression syntax"
+                    "Or use variable: :var search=\"(defun name\" then :orgit-search $search")))))
 
    ;; Other - pass through
    (t value)))
+
+(defun org-transclusion-blocks--orgit-file-validate-search-exists (value header-key type)
+  "Validate :orgit-search value exists in target file.
+
+VALUE is header value string (already expanded).
+HEADER-KEY is :orgit-search.
+TYPE is \\='orgit-file.
+
+This is a :validator-post - runs AFTER variable expansion.
+VALUE contains the actual search string, not $varname.
+
+Currently just checks VALUE is non-empty.  Could be extended to
+verify search string exists in target file.
+
+Returns VALUE unchanged if valid."
+  (when (string-empty-p value)
+    (user-error "%s"
+                (org-transclusion-blocks-format-validation-error
+                 header-key
+                 "search string cannot be empty"
+                 value
+                 "Provide a search string or remove :orgit-search header")))
+  value)
 
 (defun org-transclusion-blocks--git-ref-p (value)
   "Return non-nil if VALUE is valid git reference format.
@@ -98,14 +137,15 @@ This is user-defined validation - not framework behavior."
           :expand-vars t)
    :rev (:header :orgit-rev
          :required t
-         :validator org-transclusion-blocks--orgit-file-validate-ref
+         :validator-post org-transclusion-blocks--orgit-file-validate-ref
          :expand-vars t)
    :file (:header :orgit-file
           :required t
           :expand-vars t)
    :search (:header :orgit-search
-            :validator org-transclusion-blocks--orgit-file-validate-search
-            :expand-vars nil))
+            :validator-pre org-transclusion-blocks--orgit-file-validate-search-syntax
+            :validator-post org-transclusion-blocks--orgit-file-validate-search-exists
+            :expand-vars t))
  (lambda (components)
    "Construct orgit-file link from COMPONENTS plist.
 
