@@ -39,11 +39,11 @@
 ;;; Code:
 
 (require 'org-transclusion-blocks)
+(require 'org-transclusion-blocks-headers)
 (require 'transient)
 
-
 ;;;; Compiler Declarations
-(defvar org-transclusion-blocks--undo-handle)  ; Defined in org-transclusion-blocks.el
+(defvar org-transclusion-blocks--undo-handle)
 
 ;;;; Customization
 
@@ -58,7 +58,6 @@
 Used when no prefix argument provided to transient suffixes."
   :type 'integer
   :group 'org-transclusion-blocks-lines)
-
 
 ;;;; Range Validation
 
@@ -119,31 +118,12 @@ Returns string like \"10-20\", \"10-\", \"-20\", or \"10-10\"."
 (defun org-transclusion-blocks-lines--get-current-range ()
   "Return current line range as cons (START . END) or nil.
 
-Checks :transclude-lines first (generic header), then :lines
-property (src-block specific).
+Checks :transclude-lines first, then :lines.
 
 START/END can be nil for open-ended ranges."
-  (let* ((element (org-element-at-point))
-         (type (org-element-type element)))
-    (cond
-     ;; For src-blocks, check both via Babel params
-     ((eq type 'src-block)
-      (let* ((info (org-babel-get-src-block-info 'no-eval))
-             (params (nth 2 info))
-             (transclude-lines (assoc-default :transclude-lines params))
-             (lines (assoc-default :lines params)))
-        (org-transclusion-blocks-lines--parse-range
-         (or transclude-lines lines))))
-
-     ;; For other blocks, parse :header property
-     (t
-      (let ((headers (org-element-property :header element)))
-        (catch 'found
-          (dolist (header-str headers)
-            (when (string-match "^:transclude-lines[ \t]+\\(.+\\)$" header-str)
-              (throw 'found (org-transclusion-blocks-lines--parse-range
-                             (match-string 1 header-str)))))
-          nil))))))
+  (let ((transclude-lines (org-transclusion-blocks-header-get :transclude-lines))
+        (lines (org-transclusion-blocks-header-get :lines)))
+    (org-transclusion-blocks-lines--parse-range (or transclude-lines lines))))
 
 (defun org-transclusion-blocks-lines--update-range (new-start new-end)
   "Update line range to NEW-START and NEW-END with coherence validation.
@@ -159,76 +139,26 @@ via `org-transclusion-blocks-lines--at-upper-boundary-p' and
 `org-transclusion-blocks-lines--at-lower-boundary-p'.
 
 Updates :transclude-lines if present, otherwise :lines.
+Errors if neither found.
+
 Refreshes transclusion after update."
-  (let* ((element (org-element-at-point))
-         (type (org-element-type element)))
+  ;; Enforce logical coherence
+  (when new-start
+    (setq new-start (max 1 new-start)))
 
-    ;; Enforce logical coherence
-    (when new-start
-      (setq new-start (max 1 new-start)))
+  (when (and new-start new-end (> new-start new-end))
+    (user-error "Cannot make start line (%d) exceed end line (%d)"
+                new-start new-end))
 
-    (when (and new-start new-end (> new-start new-end))
-      (user-error "Cannot make start line (%d) exceed end line (%d)"
-                  new-start new-end))
+  (let ((new-range (org-transclusion-blocks-lines--format-range new-start new-end)))
+    ;; Try :transclude-lines first, fall back to :lines
+    (condition-case nil
+        (org-transclusion-blocks-header-set :transclude-lines new-range)
+      (error
+       (org-transclusion-blocks-header-set :lines new-range)))
 
-    (let ((new-range (org-transclusion-blocks-lines--format-range new-start new-end)))
-      (save-excursion
-        (goto-char (org-element-property :begin element))
-
-        (cond
-         ;; For src-blocks, update via header modification
-         ((eq type 'src-block)
-          (let ((found-transclude nil)
-                (found-lines nil)
-                (begin (org-element-property :begin element)))
-            ;; Start at beginning of element
-            (goto-char begin)
-
-            ;; Scan through all #+HEADER: lines before #+begin_src
-            (while (looking-at "^[ \t]*#\\+HEADER:")
-              (cond
-               ;; Found :transclude-lines
-               ((looking-at "^\\([ \t]*#\\+HEADER:[ \t]+\\):transclude-lines[ \t]+\\(.+\\)$")
-                (setq found-transclude t)
-                (replace-match (concat "\\1:transclude-lines " new-range) nil nil nil))
-
-               ;; Found :lines (only update if no :transclude-lines)
-               ((and (not found-transclude)
-                     (looking-at "^\\([ \t]*#\\+HEADER:[ \t]+\\):lines[ \t]+\\(.+\\)$"))
-                (setq found-lines t)
-                (replace-match (concat "\\1:lines " new-range) nil nil nil)))
-
-              ;; Move to next line
-              (forward-line 1))
-
-            ;; If neither found, insert :transclude-lines before #+begin_src
-            (unless (or found-transclude found-lines)
-              (goto-char begin)
-              (insert (format "#+HEADER: :transclude-lines %s\n" new-range)))))
-
-         ;; For other blocks, update :transclude-lines in headers
-         (t
-          (let ((found nil)
-                (begin (org-element-property :begin element)))
-            ;; Start at beginning of element
-            (goto-char begin)
-
-            ;; Scan through all #+HEADER: lines before #+begin_XXX
-            (while (looking-at "^[ \t]*#\\+HEADER:")
-              (when (looking-at "^\\([ \t]*#\\+HEADER:[ \t]+\\):transclude-lines[ \t]+\\(.+\\)$")
-                (setq found t)
-                (replace-match (concat "\\1:transclude-lines " new-range) nil nil nil))
-
-              ;; Move to next line
-              (forward-line 1))
-
-            ;; If not found, insert before block begin
-            (unless found
-              (goto-char begin)
-              (insert (format "#+HEADER: :transclude-lines %s\n" new-range)))))))
-
-      ;; Refresh transclusion
-      (org-transclusion-blocks-add))))
+    ;; Refresh transclusion
+    (org-transclusion-blocks-add)))
 
 ;;;; Interactive Commands - Core Operations
 
@@ -461,6 +391,7 @@ Errors if end would go below start."
       (org-transclusion-blocks-lines--update-range start new-end))))
 
 ;;;; Helper functions
+
 (defun org-transclusion-blocks--lines-menu-cleanup ()
   "Cleanup function for lines menu transient exit.
 
@@ -558,4 +489,3 @@ Do not call directly; use `org-transclusion-blocks-lines-menu'."
     ("q" "Quit" transient-quit-one)]])
 
 (provide 'org-transclusion-blocks-lines)
-;;; org-transclusion-blocks-lines.el ends here
