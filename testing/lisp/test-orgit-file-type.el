@@ -94,14 +94,18 @@ This is user-defined validation - not framework behavior."
 (org-transclusion-blocks-register-type
  'orgit-file
  '(:repo (:header :orgit-repo
-          :required t)
+          :required t
+          :expand-vars t)
    :rev (:header :orgit-rev
          :required t
-         :validator org-transclusion-blocks--orgit-file-validate-ref)
+         :validator org-transclusion-blocks--orgit-file-validate-ref
+         :expand-vars t)
    :file (:header :orgit-file
-          :required t)
+          :required t
+          :expand-vars t)
    :search (:header :orgit-search
-            :validator org-transclusion-blocks--orgit-file-validate-search))
+            :validator org-transclusion-blocks--orgit-file-validate-search
+            :expand-vars nil))
  (lambda (components)
    "Construct orgit-file link from COMPONENTS plist.
 

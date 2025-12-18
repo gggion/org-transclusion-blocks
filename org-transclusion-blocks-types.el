@@ -36,9 +36,39 @@
 ;;      'my-type
 ;;      '(:component (:header :my-component
 ;;                    :validator my-validator-fn
-;;                    :required t))
+;;                    :required t
+;;                    :expand-vars t))
 ;;      (lambda (components)
 ;;        (format "my-type:%s" (plist-get components :component))))
+;;
+;; Component metadata properties:
+;;
+;; - :header - Header keyword (required)
+;; - :validator - Validation function (optional)
+;; - :required - Whether component is mandatory (optional)
+;; - :shadowed-by - List of components that shadow this one (optional)
+;; - :requires - List of required companion components (optional)
+;; - :conflicts - List of mutually exclusive components (optional)
+;; - :expand-vars - Whether to expand variable references (optional)
+;;
+;; Variable expansion:
+;;
+;; When :expand-vars is t, the component's header value supports
+;; variable references via $varname or bare varname patterns:
+;;
+;;     (org-transclusion-blocks-register-type
+;;      'my-type
+;;      '(:path (:header :my-path
+;;               :expand-vars t))
+;;      #'my-constructor)
+;;
+;; Usage:
+;;     #+HEADER: :var dir="~/project"
+;;     #+HEADER: :transclude-type my-type
+;;     #+HEADER: :my-path $dir/file.txt
+;;
+;; Generic transclusion headers (:transclude, :transclude-lines, etc.)
+;; always support expansion regardless of type registration.
 ;;
 ;; Validator utilities:
 ;;
@@ -52,7 +82,7 @@
 ;; - `org-transclusion-blocks-describe-type'
 ;; - `org-transclusion-blocks-list-types'
 ;;
-;; See Info node `(org-transclusion-blocks) Type Registration'.
+;; See Info node `(org-transclusion-blocks) Type Registration' (NOT YET).
 
 ;;; Code:
 
@@ -523,6 +553,7 @@ TYPE is symbol naming registered link type.
 Shows:
 - Component specifications
 - Validators for each component
+- Variable expansion support
 - Interaction constraints (required, shadowed-by, requires, conflicts)
 - Constructor function
 - Usage example
@@ -544,10 +575,13 @@ See `org-transclusion-blocks-list-types' for available types."
                    for header = (plist-get meta :header)
                    for validator = (plist-get meta :validator)
                    for required = (plist-get meta :required)
+                   for expand-vars = (plist-get meta :expand-vars)
                    do (progn
                         (insert (format "  %-12s -> %-20s" key header))
                         (when required
                           (insert " [REQUIRED]"))
+                        (when expand-vars
+                          (insert " [expand-vars]"))
                         (when validator
                           (insert (format " [validator: %s]" validator)))
                         (insert "\n")))

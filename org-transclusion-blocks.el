@@ -52,6 +52,29 @@
 ;; Generic headers (:transclude-lines, :transclude-thing) are mutually
 ;; exclusive and take precedence over :transclude-keywords specifications.
 ;;
+;; Variable substitution in headers:
+;;
+;; Transclusion headers support variable references via :var:
+;;
+;;     #+HEADER: :var repo="~/project"
+;;     #+HEADER: :transclude-type orgit-file
+;;     #+HEADER: :orgit-repo $repo
+;;     #+HEADER: :orgit-file "src/core.el"
+;;
+;; Two reference patterns are supported:
+;; - $varname - Explicit dollar-prefixed reference
+;; - varname - Bare name (when value is exactly the variable name)
+;;
+;; Generic headers always support expansion:
+;; - :transclude, :transclude-keywords, :transclude-lines, etc.
+;;
+;; Type-specific headers opt in via :expand-vars property:
+;; - See `org-transclusion-blocks-register-type' documentation
+;; - Use `org-transclusion-blocks-describe-type' to check support
+;;
+;; Babel control headers (:results, :session, etc.) are NEVER expanded
+;; to avoid interfering with language backend variable handling.
+;;
 ;; Org syntax escaping prevents markup collisions:
 ;;
 ;; Enabled by default for Org sources via
@@ -59,7 +82,7 @@
 ;; :transclude-escape-org header or set file/subtree defaults via
 ;; #+PROPERTY: header-args.
 ;;
-;; ;; Converting existing transclusions:
+;; Converting existing transclusions:
 ;;
 ;; Existing #+transclude: keywords can be converted to header form:
 ;;
@@ -87,7 +110,6 @@
 ;; - `org-transclusion-blocks-validate-current-block' - Test validators
 ;; - `org-transclusion-blocks-describe-type' - Show type documentation
 ;; - `org-transclusion-blocks-list-types' - List registered types
-
 ;;; Code:
 
 (require 'org-transclusion)
@@ -224,6 +246,353 @@ text property changes are not recorded in undo list to prevent
 undo corruption when undoing/redoing content changes.
 
 See Info node `(elisp)Atomic Changes' for change group protocol.")
+
+;;;; Variable Expansion Support
+;;
+;; Variable expansion is controlled via component metadata in type registry.
+;; Generic transclusion headers have expansion enabled by default.
+;; Type-specific component headers opt in via :expand-vars property.
+;;
+;; Expansion occurs before link construction in org-transclusion-blocks-add.
+;;
+;; CRITICAL: Only transclusion headers support expansion to avoid
+;; interfering with Babel's own variable handling for language backends.
+
+(defconst org-transclusion-blocks--generic-expandable-headers
+  '(:transclude
+    :transclude-keywords
+    :transclude-lines
+    :transclude-thing
+    :transclude-escape-org
+    :transclude-type)
+  "Generic transclusion headers that support variable expansion.
+
+These headers always support expansion regardless of :transclude-type.
+
+Type-specific component headers opt in via :expand-vars property in
+their component metadata.  See `org-transclusion-blocks-register-type'.")
+
+(defun org-transclusion-blocks--header-expandable-p (key params)
+  "Return non-nil if KEY header supports variable expansion.
+
+KEY is header keyword symbol.
+PARAMS is full parameter alist (used to check for :transclude-type).
+
+Headers are expandable if:
+1. KEY is in `org-transclusion-blocks--generic-expandable-headers', OR
+2. KEY is a component header with :expand-vars t in its metadata
+
+This prevents expansion of Babel control headers and language-specific
+headers that might have their own variable handling.
+
+Type authors control expansion per-component via :expand-vars property:
+
+    (org-transclusion-blocks-register-type
+     \\='my-type
+     \\='(:component (:header :my-header
+                    :expand-vars t))  ; Enable expansion
+     #\\='my-constructor)"
+  (or
+   ;; Generic transclusion headers
+   (memq key org-transclusion-blocks--generic-expandable-headers)
+
+   ;; Type-specific component with :expand-vars t
+   (when-let* ((type-raw (cdr (assq :transclude-type params)))
+               (type (if (symbolp type-raw) type-raw
+                       (intern (org-strip-quotes
+                                (if (stringp type-raw) type-raw
+                                  (format "%s" type-raw))))))
+               (component-spec (alist-get type org-transclusion-blocks--type-components)))
+     ;; Find component metadata for KEY and check :expand-vars
+     (cl-loop for (_semantic-key meta) on component-spec by #'cddr
+              when (eq key (plist-get meta :header))
+              return (plist-get meta :expand-vars)))))
+
+(defun org-transclusion-blocks--parse-var-headers (params)
+  "Extract variable bindings from PARAMS.
+
+PARAMS is alist of header arguments.
+
+Returns alist of (NAME . VALUE) pairs suitable for variable expansion.
+
+Parses :var headers in format \"name=value\" or (name . value).
+
+Examples:
+    (:var . \"repo=~/project\") -> ((repo . \"~/project\"))
+    (:var . (repo . \"~/project\")) -> ((repo . \"~/project\"))"
+  (let ((vars nil))
+    (dolist (pair params)
+      (when (eq (car pair) :var)
+        (let ((var-spec (cdr pair)))
+          (cond
+           ;; Already parsed as cons cell
+           ((consp var-spec)
+            (push var-spec vars))
+
+           ;; String format "name=value"
+           ((stringp var-spec)
+            (when (string-match "^\\([^=]+\\)=\\(.+\\)$" var-spec)
+              (let ((name (intern (string-trim (match-string 1 var-spec))))
+                    (value (string-trim (match-string 2 var-spec))))
+                ;; Remove surrounding quotes if present
+                (when (and (string-prefix-p "\"" value)
+                           (string-suffix-p "\"" value))
+                  (setq value (substring value 1 -1)))
+                (push (cons name value) vars))))))))
+    (nreverse vars)))
+
+(defun org-transclusion-blocks--vector-to-link-string (vec)
+  "Convert vector VEC to bracket link string.
+
+VEC is a vector parsed by Babel from [[link]] syntax.
+Babel parses [[link]] as (vector (vector \\='link-symbol)).
+
+Returns string \"[[link]]\" with proper escaping preserved.
+
+Examples:
+  Input: [[file:path]]
+  Babel: (vector (vector \\='file:path))
+  Output: \"[[file:path]]\"
+
+  Input: [[file:path::\\(defun]]
+  Babel: (vector (vector \\='file:path::\\(defun))
+  Output: \"[[file:path::\\(defun]]\""
+  ;; Unwrap nested vectors to find the innermost element
+  (let ((elem vec))
+    (while (and (vectorp elem) (> (length elem) 0))
+      (setq elem (aref elem 0)))
+
+    ;; Convert innermost element to string and wrap in brackets
+    (let ((link-content
+           (cond
+            ((symbolp elem) (symbol-name elem))
+            ((stringp elem) elem)
+            (t (format "%s" elem)))))
+      (concat "[[" link-content "]]"))))
+
+(defun org-transclusion-blocks--expand-header-vars (params)
+  "Expand variable references in transclusion-related PARAMS.
+
+PARAMS is alist of header arguments from `org-babel-get-src-block-info'.
+
+Expands references ONLY in transclusion headers:
+- `org-transclusion-blocks--generic-expandable-headers' (generic headers)
+- Type-specific component headers with :expand-vars t
+
+Does NOT expand:
+- Babel control headers (`:results', `:exports', `:session', etc.)
+- Language-specific headers (`:python', `:flags', etc.)
+- `:var' definitions themselves
+- Type-specific headers without :expand-vars property
+
+This prevents interference with Babel language backends that have
+their own variable handling.
+
+Variable reference patterns:
+- `$varname' - Explicit variable reference
+- `varname' - Bare name (only if matches defined variable)
+- `[[...$varname...]]' - Variable inside bracket link
+
+Variables are resolved via `:var' header arguments.  String values are
+substituted directly.  Non-string values are formatted via
+`format \"%S\"'.
+
+Returns new alist with expanded values.  Original PARAMS unchanged.
+
+Example:
+
+    #+HEADER: :var repo=\"~/project\"
+    #+HEADER: :transclude [[file:$repo/file.org]]
+    #+HEADER: :results output
+
+After expansion, `:transclude' becomes \"[[file:~/project/file.org]]\".
+`:results' remains \"output\" (not expanded)."
+  (message "[org-transclusion-blocks] ========== Starting header expansion ==========")
+  (message "[org-transclusion-blocks] Input params: %S" params)
+
+  (let ((vars (org-transclusion-blocks--parse-var-headers params))
+        (expanded-params nil))
+    (message "[org-transclusion-blocks] Parsed variables: %S" vars)
+
+    (dolist (pair params)
+      (let* ((key (car pair))
+             (value (cdr pair))
+             (expandable (org-transclusion-blocks--header-expandable-p key params)))
+
+        (message "[org-transclusion-blocks] Processing header: %S = %S (type: %s, expandable: %S)"
+                 key value (type-of value) expandable)
+
+        ;; Determine final value
+        (let ((final-value
+               (cond
+                ;; Non-expandable: keep original value unchanged
+                ((not expandable)
+                 value)
+
+                ;; Expandable string: try expansion
+                ((stringp value)
+                 (if (string-empty-p value)
+                     value
+                   (let ((expanded (org-transclusion-blocks--expand-value-vars value vars)))
+                     (message "[org-transclusion-blocks] String expansion: %S -> %S" value expanded)
+                     expanded)))
+
+                ;; Expandable vector: Babel parsed [[link]] as nested vector
+                ((vectorp value)
+                 (let* ((link-str (org-transclusion-blocks--vector-to-link-string value))
+                        (expanded (org-transclusion-blocks--expand-value-vars link-str vars)))
+                   (message "[org-transclusion-blocks] Vector expansion: %S -> %S -> %S"
+                            value link-str expanded)
+                   expanded))
+
+                ;; Expandable symbol: convert to string, expand, keep as string
+                ((symbolp value)
+                 (let* ((value-str (symbol-name value))
+                        (expanded (org-transclusion-blocks--expand-value-vars value-str vars)))
+                   (message "[org-transclusion-blocks] Symbol expansion: %S -> %S" value expanded)
+                   expanded))
+
+                ;; Expandable number: convert to string, expand
+                ((numberp value)
+                 (let* ((value-str (number-to-string value))
+                        (expanded (org-transclusion-blocks--expand-value-vars value-str vars)))
+                   (message "[org-transclusion-blocks] Number expansion: %S -> %S" value expanded)
+                   expanded))
+
+                ;; Other expandable types: format and expand
+                (t
+                 (let* ((value-str (format "%S" value))
+                        (expanded (org-transclusion-blocks--expand-value-vars value-str vars)))
+                   (message "[org-transclusion-blocks] Other type expansion: %S -> %S" value expanded)
+                   expanded)))))
+
+          (when (not (equal value final-value))
+            (message "[org-transclusion-blocks] Header %S changed: %S -> %S"
+                     key value final-value))
+
+          (push (cons key final-value) expanded-params))))
+
+    (let ((result (nreverse expanded-params)))
+      (message "[org-transclusion-blocks] Final expanded params count: %d" (length result))
+      (message "[org-transclusion-blocks] Final expanded params: %S" result)
+      (message "[org-transclusion-blocks] ========== Finished header expansion ==========")
+      result)))
+
+(defun org-transclusion-blocks--expand-value-vars (value vars)
+  "Expand variable references in VALUE string using VARS alist.
+
+VALUE is header argument value string.
+VARS is alist with (NAME . VALUE) pairs.
+
+Supports three reference patterns:
+- `$varname' - Explicit dollar-prefixed reference
+- `varname' - Bare name matching entire value
+- `[[...$varname...]]' - Variable reference inside bracket link
+
+For bracket links, extracts content between [[ and ]], expands
+variables within that content, then re-wraps in brackets.
+
+Returns expanded string with variables substituted.
+Non-string variable values are formatted via `format \"%S\"'.
+
+If no variables match, returns VALUE unchanged.
+
+Examples:
+
+    VALUE: \"$repo/file.txt\"
+    VARS: ((repo . \"~/project\"))
+    Result: \"~/project/file.txt\"
+
+    VALUE: \"[[file:$repo/file.org]]\"
+    VARS: ((repo . \"~/project\"))
+    Result: \"[[file:~/project/file.org]]\"
+
+    VALUE: \"myvar\"
+    VARS: ((myvar . \"expanded\"))
+    Result: \"expanded\"
+
+    VALUE: \"literal\"
+    VARS: ((other . \"value\"))
+    Result: \"literal\" (unchanged)"
+  (message "[org-transclusion-blocks] expand-value-vars called with value: %S" value)
+  (message "[org-transclusion-blocks] Available vars: %S" vars)
+
+  (let ((result value))
+    ;; Special handling for bracket links
+    (if (and (string-prefix-p "[[" value)
+             (string-suffix-p "]]" value))
+        (progn
+          (message "[org-transclusion-blocks] Detected bracket link")
+          ;; Extract content between brackets
+          (let* ((inner (substring value 2 -2))
+                 (expanded-inner inner))
+
+            (message "[org-transclusion-blocks] Inner content: %S" inner)
+
+            ;; Try exact match on inner content (bare variable)
+            (let ((exact-match (assoc (intern inner) vars)))
+              (when exact-match
+                (message "[org-transclusion-blocks] Found exact match for %S" inner)
+                (let ((var-value (cdr exact-match)))
+                  (setq expanded-inner (if (stringp var-value)
+                                           var-value
+                                         (format "%S" var-value))))))
+
+            ;; Expand $varname references in inner content
+            (dolist (var-pair vars)
+              (let* ((var-name (symbol-name (car var-pair)))
+                     (var-value (cdr var-pair))
+                     (pattern (concat "\\$" (regexp-quote var-name))))
+                (message "[org-transclusion-blocks] Checking pattern %S against %S"
+                         pattern expanded-inner)
+                (when (string-match-p pattern expanded-inner)
+                  (message "[org-transclusion-blocks] Pattern matched! Expanding $%s" var-name)
+                  (setq expanded-inner
+                        (replace-regexp-in-string
+                         pattern
+                         (if (stringp var-value)
+                             var-value
+                           (format "%S" var-value))
+                         expanded-inner
+                         t t))
+                  (message "[org-transclusion-blocks] After expansion: %S" expanded-inner))))
+
+            ;; Re-wrap in brackets
+            (setq result (concat "[[" expanded-inner "]]"))
+            (message "[org-transclusion-blocks] Re-wrapped result: %S" result)))
+
+      ;; Non-bracket value: original logic
+      (progn
+        (message "[org-transclusion-blocks] Non-bracket value, using standard expansion")
+        ;; Try exact match first (bare variable name)
+        (let ((exact-match (assoc (intern value) vars)))
+          (when exact-match
+            (message "[org-transclusion-blocks] Found exact match for %S" value)
+            (let ((var-value (cdr exact-match)))
+              (setq result (if (stringp var-value)
+                               var-value
+                             (format "%S" var-value))))))
+
+        ;; Expand $varname references
+        (dolist (var-pair vars)
+          (let* ((var-name (symbol-name (car var-pair)))
+                 (var-value (cdr var-pair))
+                 (pattern (concat "\\$" (regexp-quote var-name))))
+            (when (string-match-p pattern result)
+              (message "[org-transclusion-blocks] Expanding $%s in %S" var-name result)
+              (setq result
+                    (replace-regexp-in-string
+                     pattern
+                     (if (stringp var-value)
+                         var-value
+                       (format "%S" var-value))
+                     result
+                     t t))
+              (message "[org-transclusion-blocks] After expansion: %S" result))))))
+
+    (message "[org-transclusion-blocks] Final result: %S" result)
+    result))
+
 ;;;; Block Type Support
 
 (defun org-transclusion-blocks--source-is-org-p (link-string)
@@ -1196,12 +1565,22 @@ Supports two mutually exclusive header forms:
 
 1. Direct link mode:
    #+HEADER: :transclude [[TYPE:PATH::SEARCH]]
-   #+HEADER: :transclude-keywords \":level 2\"  ; optional
+   #+HEADER: :transclude-keywords \":lines 10-15 :only-contents\"
 
 2. Component mode (requires registered type):
    #+HEADER: :transclude-type REGISTERED-TYPE
    #+HEADER: :TYPE-COMPONENT-1 VALUE
    #+HEADER: :TYPE-COMPONENT-2 VALUE
+
+Variable substitution is supported in transclusion headers:
+   #+HEADER: :var file=\"~/project/file.org\"
+   #+HEADER: :transclude [[file:$file]]
+   #+HEADER: :transclude-lines 10-20
+
+Generic transclusion headers always support variable expansion.
+Type-specific headers support expansion when registered with
+:expand-vars t property.  Babel control headers (:results, :session)
+are never expanded.
 
 Point must be on or within a supported block type.
 
@@ -1253,9 +1632,13 @@ Returns t on success, nil if no headers or fetch failed."
         (let* ((params (if (eq type 'src-block)
                            (nth 2 (org-babel-get-src-block-info))
                          (org-transclusion-blocks--parse-headers-direct element)))
-               (keyword-plist (org-transclusion-blocks--params-to-plist params)))
+               ;; Expand variables in transclusion headers only
+               (expanded-params (org-transclusion-blocks--expand-header-vars params))
+               ;; Use expanded-params instead of params
+               (keyword-plist (org-transclusion-blocks--params-to-plist expanded-params)))
 
-          (org-transclusion-blocks--check-mode-compat params)
+          ;; Use expanded-params for mode compatibility check
+          (org-transclusion-blocks--check-mode-compat expanded-params)
 
           (if (not keyword-plist)
               (progn
@@ -1265,7 +1648,8 @@ Returns t on success, nil if no headers or fetch failed."
             (let ((link-string (plist-get keyword-plist :link)))
               (if-let ((content (org-transclusion-blocks--fetch-content keyword-plist)))
                   (progn
-                    (when (org-transclusion-blocks--should-escape-p keyword-plist params)
+                    ;; Use expanded-params for escape check
+                    (when (org-transclusion-blocks--should-escape-p keyword-plist expanded-params)
                       (setq content (org-transclusion-blocks--escape-org-syntax content)))
 
                     ;; Remember position before content update
@@ -1298,7 +1682,6 @@ Returns t on success, nil if no headers or fetch failed."
                         (org-transclusion-blocks--apply-metadata block-beg block-end keyword-plist link-string))
 
                       (org-transclusion-blocks--show-indicator element)
-                      ;; (message "Transclusion content inserted into %s block" type)
                       t))
 
                 (message "Failed to fetch transclusion content")
