@@ -795,7 +795,7 @@ Returns t always."
       (dolist (header-str all-header-strings)
         (when (string-match ":transclude-type[ \t]+\\([^ \t\n]+\\)" header-str)
           (setq type-keyword (intern (match-string 1 header-str)))))
-      
+
       (when-let ((component-spec (alist-get type-keyword
                                             org-transclusion-blocks--type-components)))
         (let ((pre-validators (make-hash-table :test 'eq)))
@@ -805,7 +805,7 @@ Returns t always."
                    for validator-pre = (plist-get meta :validator-pre)
                    when validator-pre
                    do (puthash header-key validator-pre pre-validators))
-          
+
           ;; Parse and validate headers
           (dolist (header-str all-header-strings)
             (when (string-match "^:\\([^ \t]+\\)\\(?:[ \t]+\\(.+\\)\\)?$" header-str)
@@ -835,7 +835,7 @@ Returns t always."
                            (intern (org-strip-quotes
                                     (if (stringp type-raw) type-raw
                                       (format "%s" type-raw)))))))
-    
+
     (when-let ((component-spec (alist-get type-keyword
                                           org-transclusion-blocks--type-components)))
       (let ((post-validators (make-hash-table :test 'eq)))
@@ -847,7 +847,7 @@ Returns t always."
                                           (plist-get meta :validator))
                  when validator-post
                  do (puthash header-key validator-post post-validators))
-        
+
         ;; Run validators on expanded params
         (dolist (pair params)
           (let* ((key (car pair))
@@ -861,7 +861,7 @@ Returns t always."
                               ((numberp val) (number-to-string val))
                               (t (format "%S" val)))))
                 (funcall validator val-str key type-keyword)))))
-        
+
         ;; Check interactions
         (when-let ((warnings (org-transclusion-blocks--check-interactions
                               type-keyword

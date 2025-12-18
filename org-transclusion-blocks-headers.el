@@ -122,12 +122,12 @@ Searches in order:
 Returns nil if ARG-NAME not found anywhere."
   (let ((element (org-element-at-point))
         (locations nil))
-    
+
     (unless (memq (org-element-type element)
                   '(src-block quote-block example-block export-block
                     special-block verse-block center-block comment-block))
       (user-error "Not on a supported block"))
-    
+
     ;; Search #+HEADER: lines
     (save-excursion
       (goto-char (org-element-property :begin element))
@@ -143,7 +143,7 @@ Returns nil if ARG-NAME not found anywhere."
                  :precedence 3)
                 locations))
         (forward-line 1)))
-    
+
     ;; Search inline args on #+begin_ line
     (save-excursion
       (goto-char (org-element-property :begin element))
@@ -160,7 +160,7 @@ Returns nil if ARG-NAME not found anywhere."
                  :value (buffer-substring-no-properties (car bounds) (cdr bounds))
                  :precedence 2)
                 locations))))
-    
+
     ;; Search property inheritance
     (when-let* ((prop-value (org-entry-get nil "HEADER-ARGS" t))
                (parsed (org-babel-parse-header-arguments prop-value))
@@ -174,7 +174,7 @@ Returns nil if ARG-NAME not found anywhere."
              :value value
              :precedence 1)
             locations))
-    
+
     ;; Sort by precedence descending
     (sort locations
           (lambda (a b)
@@ -214,7 +214,7 @@ Signals error if MODE is \\='update-existing and ARG-NAME not found.
 Signals error if attempting to update property-inherited arg."
   (let ((locations (org-transclusion-blocks-header--find-locations-in-block arg-name))
         (mode (or mode 'update-existing)))
-    
+
     (cond
      ;; Update existing location
      (locations
@@ -222,17 +222,17 @@ Signals error if attempting to update property-inherited arg."
         (when (eq (org-transclusion-blocks-header-location-location-type target)
                   'property)
           (user-error "Cannot modify property-inherited header argument %s" arg-name))
-        
+
         (org-transclusion-blocks-header--update-location target new-value)
         target))
-     
+
      ;; Insert new location
      ((memq mode '(insert-header update-or-insert-header))
       (org-transclusion-blocks-header--insert-header arg-name new-value))
-     
+
      ((memq mode '(insert-inline update-or-insert-inline))
       (org-transclusion-blocks-header--insert-inline arg-name new-value))
-     
+
      ;; Error on missing
      (t
       (user-error "Header argument %s not found and MODE does not allow insertion" arg-name)))))
@@ -256,7 +256,7 @@ Returns updated location struct."
   (let ((current (org-transclusion-blocks-header-get arg-name)))
     (unless current
       (user-error "Cannot partially update non-existent header argument %s" arg-name))
-    
+
     (let ((new-value (funcall update-fn current)))
       (org-transclusion-blocks-header-set arg-name new-value mode))))
 
@@ -272,12 +272,12 @@ Modifies buffer at location's value-bounds."
   (let ((bounds (org-transclusion-blocks-header-location-value-bounds location)))
     (unless bounds
       (error "Cannot update location without value-bounds"))
-    
+
     (save-excursion
       (delete-region (car bounds) (cdr bounds))
       (goto-char (car bounds))
       (insert new-value))
-    
+
     ;; Update struct
     (setf (org-transclusion-blocks-header-location-value location) new-value)
     (setf (org-transclusion-blocks-header-location-value-bounds location)
@@ -294,12 +294,12 @@ Returns new location struct."
   (let ((element (org-element-at-point))
         (begin (org-element-property :begin (org-element-at-point)))
         (arg-string (substring (symbol-name arg-name) 1)))
-    
+
     (save-excursion
       (goto-char begin)
       (let ((insert-pos (point)))
         (insert (format "#+HEADER: :%s %s\n" arg-string value))
-        
+
         (make-org-transclusion-blocks-header-location
          :block-element element
          :arg-name arg-name
@@ -321,20 +321,20 @@ Returns new location struct."
   (let ((element (org-element-at-point))
         (begin (org-element-property :begin (org-element-at-point)))
         (arg-string (substring (symbol-name arg-name) 1)))
-    
+
     (save-excursion
       (goto-char begin)
       ;; Skip #+HEADER: lines
       (while (looking-at "^[ \t]*#\\+HEADER:")
         (forward-line 1))
-      
+
       (unless (looking-at "^[ \t]*#\\+begin_")
         (error "Expected #+begin_ line"))
-      
+
       (end-of-line)
       (let ((insert-pos (point)))
         (insert (format " :%s %s" arg-string value))
-        
+
         (make-org-transclusion-blocks-header-location
          :block-element element
          :arg-name arg-name
