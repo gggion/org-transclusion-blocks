@@ -407,20 +407,13 @@ Example:
 
 After expansion, `:transclude' becomes \"[[file:~/project/file.org]]\".
 `:results' remains \"output\" (not expanded)."
-  (message "[org-transclusion-blocks] ========== Starting header expansion ==========")
-  (message "[org-transclusion-blocks] Input params: %S" params)
-
   (let ((vars (org-transclusion-blocks--parse-var-headers params))
         (expanded-params nil))
-    (message "[org-transclusion-blocks] Parsed variables: %S" vars)
 
     (dolist (pair params)
       (let* ((key (car pair))
              (value (cdr pair))
              (expandable (org-transclusion-blocks--header-expandable-p key params)))
-
-        (message "[org-transclusion-blocks] Processing header: %S = %S (type: %s, expandable: %S)"
-                 key value (type-of value) expandable)
 
         ;; Determine final value
         (let ((final-value
@@ -433,50 +426,31 @@ After expansion, `:transclude' becomes \"[[file:~/project/file.org]]\".
                 ((stringp value)
                  (if (string-empty-p value)
                      value
-                   (let ((expanded (org-transclusion-blocks--expand-value-vars value vars)))
-                     (message "[org-transclusion-blocks] String expansion: %S -> %S" value expanded)
-                     expanded)))
+                   (org-transclusion-blocks--expand-value-vars value vars)))
 
                 ;; Expandable vector: Babel parsed [[link]] as nested vector
                 ((vectorp value)
-                 (let* ((link-str (org-transclusion-blocks--vector-to-link-string value))
-                        (expanded (org-transclusion-blocks--expand-value-vars link-str vars)))
-                   (message "[org-transclusion-blocks] Vector expansion: %S -> %S -> %S"
-                            value link-str expanded)
-                   expanded))
+                 (let ((link-str (org-transclusion-blocks--vector-to-link-string value)))
+                   (org-transclusion-blocks--expand-value-vars link-str vars)))
 
                 ;; Expandable symbol: convert to string, expand, keep as string
                 ((symbolp value)
-                 (let* ((value-str (symbol-name value))
-                        (expanded (org-transclusion-blocks--expand-value-vars value-str vars)))
-                   (message "[org-transclusion-blocks] Symbol expansion: %S -> %S" value expanded)
-                   expanded))
+                 (let ((value-str (symbol-name value)))
+                   (org-transclusion-blocks--expand-value-vars value-str vars)))
 
                 ;; Expandable number: convert to string, expand
                 ((numberp value)
-                 (let* ((value-str (number-to-string value))
-                        (expanded (org-transclusion-blocks--expand-value-vars value-str vars)))
-                   (message "[org-transclusion-blocks] Number expansion: %S -> %S" value expanded)
-                   expanded))
+                 (let ((value-str (number-to-string value)))
+                   (org-transclusion-blocks--expand-value-vars value-str vars)))
 
                 ;; Other expandable types: format and expand
                 (t
-                 (let* ((value-str (format "%S" value))
-                        (expanded (org-transclusion-blocks--expand-value-vars value-str vars)))
-                   (message "[org-transclusion-blocks] Other type expansion: %S -> %S" value expanded)
-                   expanded)))))
-
-          (when (not (equal value final-value))
-            (message "[org-transclusion-blocks] Header %S changed: %S -> %S"
-                     key value final-value))
+                 (let ((value-str (format "%S" value)))
+                   (org-transclusion-blocks--expand-value-vars value-str vars))))))
 
           (push (cons key final-value) expanded-params))))
 
-    (let ((result (nreverse expanded-params)))
-      (message "[org-transclusion-blocks] Final expanded params count: %d" (length result))
-      (message "[org-transclusion-blocks] Final expanded params: %S" result)
-      (message "[org-transclusion-blocks] ========== Finished header expansion ==========")
-      result)))
+    (nreverse expanded-params)))
 
 (defun org-transclusion-blocks--expand-value-vars (value vars)
   "Expand variable references in VALUE string using VARS alist.
@@ -801,10 +775,10 @@ Used by `org-transclusion-blocks-add' for non-src-block types."
 
 ELEMENT is org-element block context.
 
-Runs validators for each component before content fetching.
-Emits warnings via `org-transclusion-blocks--check-interactions'.
+Runs :validator-pre validators for each component BEFORE variable
+expansion.  These validators check Babel parsing safety.
 
-Called by `org-transclusion-blocks-add' when typed components detected.
+Called by `org-transclusion-blocks-add' before variable expansion.
 
 Returns t always."
   (let* ((raw-headers (org-element-property :header element))
@@ -817,37 +791,90 @@ Returns t always."
                                     raw-headers))))
     (let ((type-keyword nil)
           (parsed-params nil))
+      ;; Extract :transclude-type
       (dolist (header-str all-header-strings)
         (when (string-match ":transclude-type[ \t]+\\([^ \t\n]+\\)" header-str)
           (setq type-keyword (intern (match-string 1 header-str)))))
+      
       (when-let ((component-spec (alist-get type-keyword
                                             org-transclusion-blocks--type-components)))
-        (let ((header-validators (make-hash-table :test 'eq)))
+        (let ((pre-validators (make-hash-table :test 'eq)))
+          ;; Build pre-validator map
           (cl-loop for (semantic-key meta) on component-spec by #'cddr
                    for header-key = (plist-get meta :header)
-                   for validator = (plist-get meta :validator)
-                   when validator
-                   do (puthash header-key validator header-validators))
+                   for validator-pre = (plist-get meta :validator-pre)
+                   when validator-pre
+                   do (puthash header-key validator-pre pre-validators))
+          
+          ;; Parse and validate headers
           (dolist (header-str all-header-strings)
             (when (string-match "^:\\([^ \t]+\\)\\(?:[ \t]+\\(.+\\)\\)?$" header-str)
               (let* ((key (intern (concat ":" (match-string 1 header-str))))
                      (val (or (match-string 2 header-str) ""))
-                     (validator (gethash key header-validators)))
+                     (validator (gethash key pre-validators)))
                 (push (cons key val) parsed-params)
                 (when validator
-                  (funcall validator val key type-keyword)))))
-          (when-let ((warnings (org-transclusion-blocks--check-interactions
-                                type-keyword
-                                parsed-params
-                                component-spec)))
-            (when org-transclusion-blocks-show-interaction-warnings
-              (display-warning 'org-transclusion-blocks
-                               (concat "Component interaction issues:\n"
-                                       (mapconcat (lambda (w) (concat "  • " w))
-                                                  warnings
-                                                  "\n"))
-                               :warning))))))
-    t))
+                  (funcall validator val key type-keyword)))))))))
+  t)
+
+(defun org-transclusion-blocks--post-validate-headers (params)
+  "Post-validate PARAMS using registered validators.
+
+PARAMS is alist of header arguments (already parsed and expanded).
+
+Runs :validator-post and :validator validators for each component
+AFTER variable expansion.  These validators check semantic correctness.
+
+Called by `org-transclusion-blocks-add' after variable expansion.
+
+Returns t always."
+  (let ((type-keyword nil))
+    ;; Extract :transclude-type from params
+    (when-let ((type-raw (cdr (assq :transclude-type params))))
+      (setq type-keyword (if (symbolp type-raw) type-raw
+                           (intern (org-strip-quotes
+                                    (if (stringp type-raw) type-raw
+                                      (format "%s" type-raw)))))))
+    
+    (when-let ((component-spec (alist-get type-keyword
+                                          org-transclusion-blocks--type-components)))
+      (let ((post-validators (make-hash-table :test 'eq)))
+        ;; Build post-validator map
+        (cl-loop for (semantic-key meta) on component-spec by #'cddr
+                 for header-key = (plist-get meta :header)
+                 ;; Check :validator-post first, fall back to :validator
+                 for validator-post = (or (plist-get meta :validator-post)
+                                          (plist-get meta :validator))
+                 when validator-post
+                 do (puthash header-key validator-post post-validators))
+        
+        ;; Run validators on expanded params
+        (dolist (pair params)
+          (let* ((key (car pair))
+                 (val (cdr pair))
+                 (validator (gethash key post-validators)))
+            (when validator
+              ;; Convert value to string if needed
+              (let ((val-str (cond
+                              ((stringp val) val)
+                              ((symbolp val) (symbol-name val))
+                              ((numberp val) (number-to-string val))
+                              (t (format "%S" val)))))
+                (funcall validator val-str key type-keyword)))))
+        
+        ;; Check interactions
+        (when-let ((warnings (org-transclusion-blocks--check-interactions
+                              type-keyword
+                              params
+                              component-spec)))
+          (when org-transclusion-blocks-show-interaction-warnings
+            (display-warning 'org-transclusion-blocks
+                             (concat "Component interaction issues:\n"
+                                     (mapconcat (lambda (w) (concat "  • " w))
+                                                warnings
+                                                "\n"))
+                             :warning))))))
+  t)
 
 ;;;; Block Type
 (defun org-transclusion-blocks--check-generic-conflicts (params)
@@ -1582,13 +1609,18 @@ Type-specific headers support expansion when registered with
 :expand-vars t property.  Babel control headers (:results, :session)
 are never expanded.
 
+Validation occurs in two phases:
+1. Pre-validation (before expansion): :validator-pre checks syntax
+2. Post-validation (after expansion): :validator-post checks semantics
+
 Point must be on or within a supported block type.
 
 For src-blocks, uses Babel for header processing.
 For other blocks, parses headers directly.
 
-Runs validators via `org-transclusion-blocks--pre-validate-headers' when
-typed components detected.
+Runs pre-validators via `org-transclusion-blocks--pre-validate-headers'
+before variable expansion.  Runs post-validators via
+`org-transclusion-blocks--post-validate-headers' after expansion.
 
 Applies Org syntax escaping via
 `org-transclusion-blocks--escape-org-syntax' when
@@ -1626,6 +1658,7 @@ Returns t on success, nil if no headers or fetch failed."
       (save-excursion
         (goto-char (org-element-property :begin element))
 
+        ;; Pre-validate BEFORE variable expansion (syntax checks)
         (when (org-transclusion-blocks--has-typed-components-p element)
           (org-transclusion-blocks--pre-validate-headers element))
 
@@ -1633,59 +1666,61 @@ Returns t on success, nil if no headers or fetch failed."
                            (nth 2 (org-babel-get-src-block-info))
                          (org-transclusion-blocks--parse-headers-direct element)))
                ;; Expand variables in transclusion headers only
-               (expanded-params (org-transclusion-blocks--expand-header-vars params))
-               ;; Use expanded-params instead of params
-               (keyword-plist (org-transclusion-blocks--params-to-plist expanded-params)))
+               (expanded-params (org-transclusion-blocks--expand-header-vars params)))
 
-          ;; Use expanded-params for mode compatibility check
-          (org-transclusion-blocks--check-mode-compat expanded-params)
+          ;; Post-validate AFTER variable expansion (semantic checks)
+          (when (org-transclusion-blocks--has-typed-components-p element)
+            (org-transclusion-blocks--post-validate-headers expanded-params))
 
-          (if (not keyword-plist)
-              (progn
-                (message "No transclusion headers found")
-                nil)
+          (let ((keyword-plist (org-transclusion-blocks--params-to-plist expanded-params)))
 
-            (let ((link-string (plist-get keyword-plist :link)))
-              (if-let ((content (org-transclusion-blocks--fetch-content keyword-plist)))
-                  (progn
-                    ;; Use expanded-params for escape check
-                    (when (org-transclusion-blocks--should-escape-p keyword-plist expanded-params)
-                      (setq content (org-transclusion-blocks--escape-org-syntax content)))
+            (org-transclusion-blocks--check-mode-compat expanded-params)
 
-                    ;; Remember position before content update
-                    (let ((block-start (org-element-property :begin element)))
-                      ;; Update content
-                      (org-transclusion-blocks--update-content element content)
-                      (setq org-transclusion-blocks--last-fetch-time (current-time))
+            (if (not keyword-plist)
+                (progn
+                  (message "No transclusion headers found")
+                  nil)
 
-                      ;; Force re-parse by moving to block start and getting fresh element
-                      (goto-char block-start)
-                      (setq element (org-element-at-point))
+              (let ((link-string (plist-get keyword-plist :link)))
+                (if-let ((content (org-transclusion-blocks--fetch-content keyword-plist)))
+                    (progn
+                      (when (org-transclusion-blocks--should-escape-p keyword-plist expanded-params)
+                        (setq content (org-transclusion-blocks--escape-org-syntax content)))
 
-                      (let* ((bounds (org-transclusion-blocks--get-content-bounds element))
-                             (content-beg (car bounds))
-                             (content-end (cdr bounds))
-                             (block-beg (org-element-property :begin element))
-                             (block-end (org-element-property :end element)))
+                      ;; Remember position before content update
+                      (let ((block-start (org-element-property :begin element)))
+                        ;; Update content
+                        (org-transclusion-blocks--update-content element content)
+                        (setq org-transclusion-blocks--last-fetch-time (current-time))
 
-                        ;; Verify we got valid boundaries
-                        (unless (and block-beg block-end content-beg content-end
-                                     (< block-beg content-beg)
-                                     (< content-beg content-end)
-                                     (< content-end block-end))
-                          (error "Invalid block boundaries after content insertion: block[%s-%s] content[%s-%s]"
-                                 block-beg block-end content-beg content-end))
+                        ;; Force re-parse by moving to block start and getting fresh element
+                        (goto-char block-start)
+                        (setq element (org-element-at-point))
 
-                        ;; Always apply timestamp to content
-                        (org-transclusion-blocks--apply-timestamp content-beg content-end)
-                        ;; Always apply metadata (properties immediately, overlays conditionally)
-                        (org-transclusion-blocks--apply-metadata block-beg block-end keyword-plist link-string))
+                        (let* ((bounds (org-transclusion-blocks--get-content-bounds element))
+                               (content-beg (car bounds))
+                               (content-end (cdr bounds))
+                               (block-beg (org-element-property :begin element))
+                               (block-end (org-element-property :end element)))
 
-                      (org-transclusion-blocks--show-indicator element)
-                      t))
+                          ;; Verify we got valid boundaries
+                          (unless (and block-beg block-end content-beg content-end
+                                       (< block-beg content-beg)
+                                       (< content-beg content-end)
+                                       (< content-end block-end))
+                            (error "Invalid block boundaries after content insertion: block[%s-%s] content[%s-%s]"
+                                   block-beg block-end content-beg content-end))
 
-                (message "Failed to fetch transclusion content")
-                nil))))))))
+                          ;; Always apply timestamp to content
+                          (org-transclusion-blocks--apply-timestamp content-beg content-end)
+                          ;; Always apply metadata (properties immediately, overlays conditionally)
+                          (org-transclusion-blocks--apply-metadata block-beg block-end keyword-plist link-string))
+
+                        (org-transclusion-blocks--show-indicator element)
+                        t))
+
+                  (message "Failed to fetch transclusion content")
+                  nil)))))))))
 
 ;;;###autoload
 (defun org-transclusion-blocks-add-all (&optional scope)
