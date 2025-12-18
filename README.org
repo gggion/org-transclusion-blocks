@@ -1,4 +1,10 @@
 #+title: org-transclusion-blocks - /Transclusion into Org blocks via header arguments/
+#+begin_quote
+[!WARNING]
+Outdated readme, information here reflects v0.2.0, since then many improvements have been made, I'll update the readme soon.
+
+Information here is still applicable, no incompatibilities, just not all the new features available. for more info look at org-transclusion-blocks-add docstring.
+#+end_quote
 
 org-transclusion-blocks enables transclusion into any Org block (src, quote,
 example, export, etc.) using header arguments, similar to how Babel uses headers
