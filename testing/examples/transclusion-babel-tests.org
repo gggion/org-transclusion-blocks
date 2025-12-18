@@ -1,0 +1,466 @@
+#+title: Transclusion Babel Integration
+Setup for testing
+For generic transclusions: none
+
+For orgit-file transclusions:
+1. Requirements: install [[https://github.com/gggion/orgit-file][orgit-file]], [[https://github.com/gggion/org-transclusion-orgit][org-transclusion-orgit]]
+2. Transclude the source block below and evaluate it, this will register orgit-file transclusion headers.
+3. that's it
+
+
+#+HEADER: :transclude [[file:../lisp/test-orgit-file-type.el]]
+#+begin_src elisp
+#+end_src
+
+* External #+HEADER usage
+** TESTS - GENERIC AND CUSTOM LINK TYPE HEADERS - VAR EXPANSION
+*** DONE Test 1: Generic :transclude with Variable Expansion
+
+#+HEADER: :var file=(car '("../../org-transclusion-blocks.el"))
+#+HEADER: :transclude [[file:$file]]
+#+HEADER: :transclude-lines 100-120
+#+begin_src elisp
+#+end_src
+
+Expected behavior:
+- :transclude expanded to [[file:/PATH-TO-REPO/org-transclusion-blocks.el]]
+- Content fetched: lines 1449-1458 from that file
+- Block populated with those 10 lines
+
+*** DONE Test 2: Generic :transclude with Multiple Variables
+If transclude-lines contains variables, we wont be able to use them with the line
+range transient menu nor the range adjustment functions
+
+#+HEADER: :var file="../../org-transclusion-blocks.el"
+#+HEADER: :var start=1200
+#+HEADER: :var end=1220
+#+HEADER: :transclude [[file:$file]]
+#+HEADER: :transclude-lines $start-$end
+#+begin_src elisp
+#+end_src
+
+Expected behavior:
+- :transclude expanded to [[file:../../org-transclusion-blocks.el]]
+- :transclude-lines expanded to 1339-1348
+- Same content as Test 1
+
+*** DONE Test 3: orgit-file Type with Variable Expansion
+
+#+HEADER: :var repo="../../"
+#+HEADER: :var branch="master"
+#+HEADER: :var filepath="org-transclusion-blocks.el"
+#+HEADER: :transclude-type orgit-file
+#+HEADER: :orgit-repo $repo
+#+HEADER: :orgit-rev $master
+#+HEADER: :orgit-file $filepath
+#+HEADER: :transclude-lines 90-100
+#+begin_src elisp
+#+end_src
+
+Expected behavior:
+- :orgit-repo expanded to ../../
+- :orgit-rev expanded to main
+- :orgit-file expanded to org-transclusion-blocks.el
+- Link constructed: orgit-file:../../::main::org-transclusion-blocks.el
+- Content fetched: lines 1339-1348 from that file at that revision
+- Same content as Test 1 and Test 2
+
+*** DONE Test 4: orgit-file with :orgit-search (header expansion enabled)
+
+#+HEADER: :var repo="../../"
+#+HEADER: :var branch="master"
+#+HEADER: :var filepath="org-transclusion-blocks.el"
+#+HEADER: :var searchterm="(defun org-transclusion-blocks--get-payload-for-metadata"
+#+HEADER: :transclude-type orgit-file
+#+HEADER: :orgit-repo $repo
+#+HEADER: :orgit-rev $branch
+#+HEADER: :orgit-file $filepath
+#+HEADER: :orgit-search $searchterm
+#+HEADER: :transclude-thing sexp
+#+begin_src elisp
+#+end_src
+
+Expected behavior:
+- :orgit-repo expanded to ../../
+- :orgit-rev expanded to main
+- :orgit-file expanded to org-transclusion-blocks.el
+- :orgit-search remains $searchterm (has :expand-vars nil)
+- Link constructed: orgit-file:../../::main::org-transclusion-blocks.el::$searchterm
+- Search fails because literal string $searchterm doesn't exist in file
+- Block remains empty or shows error
+
+*** DONE Test 5: orgit-file with Literal :orgit-search (Working)
+
+#+HEADER: :var repo="../../"
+#+HEADER: :var branch="master"
+#+HEADER: :var filepath="org-transclusion-blocks.el"
+#+HEADER: :transclude-type orgit-file
+#+HEADER: :orgit-repo $repo
+#+HEADER: :orgit-rev $branch
+#+HEADER: :orgit-file $filepath
+#+HEADER: :orgit-search "(defun org-transclusion-blocks--get-payload-for-metadata"
+#+HEADER: :transclude-thing sexp
+#+begin_src elisp
+#+end_src
+
+Expected behavior:
+- :orgit-repo expanded to ../../
+- :orgit-rev expanded to main
+- :orgit-file expanded to org-transclusion-blocks.el
+- :orgit-search remains (defun org-transclusion-move-to-source (literal, no variable)
+- Link constructed: orgit-file:../../::main::org-transclusion-blocks.el::(defun org-transclusion-move-to-source
+- Search finds the function definition
+- :transclude-thing sexp extracts the entire defun form
+- Block populated with complete function definition
+
+*** DONE Test 6: Bare Variable Reference
+
+#+HEADER: :var mylink="[[file:../../org-transclusion-blocks.el]]"
+#+HEADER: :transclude mylink
+#+HEADER: :transclude-lines 1339-1348
+#+begin_src elisp
+#+end_src
+
+Expected behavior:
+- :transclude value is exactly mylink (bare variable name)
+- Expanded to [[file:../../org-transclusion-blocks.el]]
+- Content fetched: lines 1339-1348
+- Same content as Test 1
+
+** TESTS - PROPERTY INHERITANCE
+*** [3/3] Generic Headers
+**** DONE Test 1: property usage with generic :transclude
+:PROPERTIES:
+:header-args: :var file="../../org-transclusion-blocks.el"
+:END:
+
+#+HEADER: :transclude [[file:$file]]
+#+HEADER: :transclude-lines 100-110
+#+begin_src elisp
+#+end_src
+
+Expected: =file= variable inherited from buffer-wide property, expanded in =:transclude=
+
+**** DONE Test 2: Subtree property overriding buffer-wide
+:PROPERTIES:
+:header-args: :var file="../../org-transclusion-blocks.el"
+:END:
+***** Subtree with local file variable
+#+HEADER: :var file="../../org-transclusion-blocks-types.el"
+#+HEADER: :transclude [[file:$file]]
+#+HEADER: :transclude-lines 1-11
+#+begin_src elisp
+#+end_src
+
+Expected: file from subtree property (types.el), not buffer-wide (blocks.el)
+
+**** DONE Test 3: Multiple inherited variables
+:PROPERTIES:
+:header-args: :var file="../../org-transclusion-blocks.el" :var start=1200 :var end=1220
+:END:
+
+#+HEADER: :transclude [[file:$file]]
+#+HEADER: :transclude-lines $start-$end
+#+begin_src elisp
+#+end_src
+
+Expected: All three variables inherited and expanded
+
+*** [6/6] Custom Headers (orgit-file type)
+**** DONE Test 5: Subtree property with partial override + var expansion
+:PROPERTIES:
+:header-args: :var repo="../../" :var branch="v0.3.0"
+:END:
+
+***** direct rev usage without variable expansion
+#+HEADER: :transclude-type orgit-file
+#+HEADER: :orgit-repo $repo
+#+HEADER: :orgit-rev v0.1.0
+#+HEADER: :orgit-file "org-transclusion-blocks.el"
+#+HEADER: :transclude-lines 8-18
+#+begin_src elisp
+#+end_src
+
+***** commit branch subtree
+
+#+HEADER: :transclude-type orgit-file
+#+HEADER: :orgit-repo $repo
+#+HEADER: :orgit-rev $branch
+#+HEADER: :orgit-file "org-transclusion-blocks.el"
+#+HEADER: :transclude-lines 8-18
+#+begin_src elisp
+#+end_src
+
+Expected: repo from first subtree, branch from second subtree (v0.2.0 not v0.3.0)
+
+**** DONE Test 6: Language-specific property inheritance
+:PROPERTIES:
+:header-args:elisp: :var repo="../../" :var branch="v0.1.0" :var filepath="org-transclusion-blocks.el"
+:END:
+
+#+HEADER: :transclude-type orgit-file
+#+HEADER: :orgit-repo $repo
+#+HEADER: :orgit-rev $branch
+#+HEADER: :orgit-file $filepath
+#+HEADER: :transclude-lines 1-11
+#+begin_src elisp
+#+end_src
+
+#+HEADER: :transclude-type orgit-file
+#+HEADER: :orgit-repo $repo
+#+HEADER: :orgit-rev $branch
+#+HEADER: :orgit-file $filepath
+#+HEADER: :transclude-lines 1-11
+#+begin_src python
+#+end_src
+
+Expected: elisp src block should transclude, python one not.
+
+**** DONE Test 7: Nested subtree property precedence
+***** Outer subtree
+:PROPERTIES:
+:header-args+: :var repo="../../" :var branch="v0.2.0"
+:END:
+
+#+HEADER: :transclude-type orgit-file
+#+HEADER: :orgit-repo $repo
+#+HEADER: :orgit-rev $branch
+#+HEADER: :orgit-file "org-transclusion-blocks.el"
+#+HEADER: :transclude-lines 3-13
+#+begin_src elisp
+#+end_src
+
+****** Inner subtree
+:PROPERTIES:
+:header-args+: :var branch="v0.3.0"
+:END:
+
+#+HEADER: :transclude-type orgit-file
+#+HEADER: :orgit-repo $repo
+#+HEADER: :orgit-rev $branch
+#+HEADER: :orgit-file "org-transclusion-blocks.el"
+#+HEADER: :transclude-lines 3-13
+#+begin_src elisp
+#+end_src
+
+Expected: repo from outer subtree, branch from inner subtree (v0.3.0)
+
+**** DONE Test 8: Property with search term variable
+:PROPERTIES:
+:header-args+: :var searchterm="(defun org-transclusion-blocks-add"
+:END:
+
+#+HEADER: :var repo="../../"
+#+HEADER: :var branch="master"
+#+HEADER: :var filepath="org-transclusion-blocks.el"
+#+HEADER: :transclude-type orgit-file
+#+HEADER: :orgit-repo $repo
+#+HEADER: :orgit-rev $branch
+#+HEADER: :orgit-file $filepath
+#+HEADER: :orgit-search $searchterm
+#+HEADER: :transclude-thing sexp
+#+begin_src elisp
+#+end_src
+
+Expected: searchterm inherited from property, expanded in :orgit-search, function extracted
+
+For contrast, here's the same block without var expansion
+#+HEADER: :transclude-type orgit-file
+#+HEADER: :orgit-repo "../../"
+#+HEADER: :orgit-rev "master"
+#+HEADER: :orgit-file "org-transclusion-blocks.el"
+#+HEADER: :orgit-search "(defun org-transclusion-blocks-add"
+#+HEADER: :transclude-thing sexp
+#+begin_src elisp
+#+end_src
+
+**** DONE Test 9: Mixed property and direct variables
+:PROPERTIES:
+:header-args+: :var repo="../../"
+:END:
+
+#+HEADER: :var branch="master"
+#+HEADER: :var filepath="org-transclusion-blocks.el"
+#+HEADER: :transclude-type orgit-file
+#+HEADER: :orgit-repo $repo
+#+HEADER: :orgit-rev $branch
+#+HEADER: :orgit-file $filepath
+#+HEADER: :transclude-lines 312-322
+#+begin_src elisp
+#+end_src
+
+Expected: repo from property, branch and filepath from direct headers, all expanded
+
+* Inline header usage
+** TESTS - GENERIC AND CUSTOM LINK TYPE HEADERS - VAR EXPANSION
+*** DONE Test 1: Generic :transclude with Variable Expansion
+
+#+begin_src elisp :var file=(car '("../../org-transclusion-blocks.el")) :transclude [[file:$file]] :transclude-lines 100-120
+#+end_src
+
+*** DONE Test 2: Generic :transclude with Multiple Variables
+
+#+begin_src elisp :var file="../../org-transclusion-blocks.el" :var start=1200 :var end=1220 :transclude [[file:$file]] :transclude-lines $start-$end
+#+end_src
+
+*** DONE Test 3: orgit-file Type with Variable Expansion
+
+#+begin_src elisp  :var repo="../../" :var branch="master" :var filepath="org-transclusion-blocks.el" :transclude-type orgit-file :orgit-repo $repo :orgit-rev $branch :orgit-file $filepath :transclude-lines 138-148
+#+end_src
+
+*** DONE Test 4: orgit-file with :orgit-search (header expansion enabled)
+
+#+begin_src elisp :var repo="../../" :var branch="master" :var filepath="org-transclusion-blocks.el" :var searchterm="(defun org-transclusion-blocks--get-payload-for-metadata" :transclude-type orgit-file :orgit-repo $repo :orgit-rev $branch :orgit-file $filepath :orgit-search $searchterm :transclude-thing sexp
+#+end_src
+
+*** DONE Test 5: orgit-file with Literal :orgit-search (Working)
+
+#+begin_src elisp :var repo="../../" :var branch="master" :var filepath="org-transclusion-blocks.el" :transclude-type orgit-file :orgit-repo $repo :orgit-rev $branch :orgit-file $filepath :orgit-search "(defun org-transclusion-blocks--get-payload-for-metadata" :transclude-thing sexp
+#+end_src
+
+** TESTS - GENERIC AND CUSTOM LINK TYPE HEADERS - NO VAR EXPANSION
+*** DONE Test 1: Generic :transclude with Variable Expansion
+
+#+begin_src elisp :transclude [[file:../../org-transclusion-blocks.el]] :transclude-lines 100-120
+#+end_src
+
+*** DONE Test 2: Generic :transclude with Multiple Variables
+
+#+begin_src elisp :transclude [[file:../../org-transclusion-blocks.el]] :transclude-lines 1200-1220
+#+end_src
+
+*** DONE Test 3: orgit-file Type with Variable Expansion
+
+#+begin_src elisp :transclude-type orgit-file :orgit-repo "../../" :orgit-rev "master" :orgit-file "org-transclusion-blocks.el" :transclude-lines 90-100
+#+end_src
+
+*** DONE Test 4: orgit-file with :orgit-search (header expansion enabled)
+
+#+begin_src elisp :transclude-type orgit-file :orgit-repo "../../" :orgit-rev "master" :orgit-file "org-transclusion-blocks.el" :orgit-search "(defun org-transclusion-blocks--get-payload-for-metadata" :transclude-thing sexp
+#+end_src
+
+*** DONE Test 5: orgit-file with Literal :orgit-search (Working)
+
+#+begin_src elisp :transclude-type orgit-file :orgit-repo "../../" :orgit-rev "master" :orgit-file "org-transclusion-blocks.el" :orgit-search "(defun org-transclusion-blocks--get-payload-for-metadata" :transclude-thing sexp
+#+end_src
+
+Expected behavior:
+- =:orgit-repo= expanded to =../../=
+- =:orgit-rev= expanded to =main=
+- =:orgit-file= expanded to =org-transclusion-blocks.el=
+- =:orgit-search= remains =(defun org-transclusion-move-to-source= (literal, no variable)
+- Link constructed: =orgit-file:../../::main::org-transclusion-blocks.el::(defun org-transclusion-move-to-source=
+- Search finds the function definition
+- =:transclude-thing sexp= extracts the entire =defun= form
+- Block populated with complete function definition
+
+
+
+* COMPACT TRANSCLUSIONS USING INHERITANCE AND VAR SUBSTITUTION
+** Generic Headers
+:PROPERTIES:
+:header-args+: :var root="../.."
+:header-args+: :var main-file="org-transclusion-blocks.el"
+:header-args+: :var type-file="org-translusion-blocks-types.el"
+:END:
+
+*** main file transclusions
+:PROPERTIES:
+:header-args+: :transclude file:../../$main-file
+:END:
+
+**** compact line range transclusions for the same file
+
+#+begin_src elisp :transclude-lines 174-179
+(defcustom org-transclusion-blocks-escape-org-sources t
+  "Whether to escape Org syntax when transcluding from Org files.
+
+When non-nil (recommended), automatically escapes content transcluded
+from links targeting Org files (file: links with .org extension,
+id: links, etc.).
+#+end_src
+
+#+begin_src elisp :transclude-lines 203-208
+#+end_src
+
+#+begin_src elisp :transclude-lines 292-297
+#+end_src
+
+#+begin_src elisp :transclude-lines 302-307
+#+end_src
+
+**** compact thing-at-point transclusions from the same file
+
+#+HEADER: :var search="(defun org-transclusion-blocks-validate-current-block"
+#+begin_src elisp :transclude [[file:$root/$main-file::$search]]
+#+end_src
+
+#+HEADER: :var search="(defun org-transclusion-blocks--ensure-yank-exclusions"
+#+begin_src elisp :transclude [[file:$root/$main-file::$search]]
+#+end_src
+
+#+HEADER: :var search="(defun org-transclusion-blocks--ensure-overlays-applied"
+#+begin_src elisp :transclude [[file:$root/$main-file::$search]]
+#+end_src
+
+#+HEADER: :var search="(defun org-transclusion-blocks--escape-org-syntax"
+#+begin_src elisp :transclude [[file:$root/$main-file::$search]]
+#+end_src
+
+** orgit-file transclusion-type
+
+*** compact transclusions for the same function across different commits
+:PROPERTIES:
+:header-args+: :transclude-type orgit-file
+:header-args+: :orgit-repo "../../"
+:header-args+: :orgit-file "org-transclusion-blocks.el"
+:header-args+: :orgit-search "(defun org-transclusion-blocks-add"
+:header-args+: :transclude-thing sexp
+:header-args+: :transclude-escape-org t
+:END:
+
+
+The following are all commits where changes have been made to
+=org-transclusion-blocks-add=, each transclusion shows the full function by
+using transclude-thing sexp, transclude-escape-org t is used to escape
+org-elements in the function docstring.
+
+ac055ca * v0.1.0 Add component-based transclusion framework for Org blocks
+#+begin_src elisp :orgit-rev "ac055ca"
+#+end_src
+
+90b3d39 * Add component validation and interaction checking system
+#+begin_src elisp :orgit-rev "90b3d39"
+#+end_src
+
+65c1b32 * Extend transclusion support to all Org block types
+#+begin_src elisp :orgit-rev "65c1b32"
+#+end_src
+
+48253e8 * Add construction mode detection and mixed-mode warnings
+#+begin_src elisp :orgit-rev "48253e8"
+#+end_src
+
+807c8dc * Escape Org syntax when transcluding from Org files
+#+begin_src elisp :orgit-rev "807c8dc"
+#+end_src
+
+b983720 * Fix cross-type header contamination detection in mode compatibility check
+#+begin_src elisp :orgit-rev "b983720"
+#+end_src
+
+cc0d0e3 * Store source metadata in transclusion block text properties
+#+begin_src elisp :orgit-rev "cc0d0e3"
+#+end_src
+
+6e7e8d4 * Fix save-buffer compatibility by extending metadata to block delimiters
+#+begin_src elisp :orgit-rev "6e7e8d4"
+#+end_src
+
+5d4f6c1 * Defer metadata application during transient line range adjustment
+#+begin_src elisp :orgit-rev "5d4f6c1"
+#+end_src
+
+b2b46a6 * Optimize transient performance by suppressing only overlay operations
+#+begin_src elisp :orgit-rev "b2b46a6"
+#+end_src

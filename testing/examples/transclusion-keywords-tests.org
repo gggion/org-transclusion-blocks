@@ -3,70 +3,70 @@
 
 - DONE : all tests work
 - TODO : not working currently
+* TESTS
+** DONE Basic Link Tests
 
-* DONE Basic Link Tests
-
-** Simple Transclusion
+*** Simple Transclusion
 
 #+HEADER: :transclude [[file:sample_data/sample.org::*Introduction]]
 #+begin_src 
 #+end_src
 
-** ID-based Link
+*** ID-based Link
 #+HEADER: :transclude [[id:df594afd-a996-40a9-b8b4-db84c3f44120]]
 #+HEADER: :transclude-keywords ":only-contents"
 #+begin_src org
 #+end_src
 
-* DONE Level Adjustment Tests
+** DONE Level Adjustment Tests
 
-** Absolute Level
+*** Absolute Level
 
 #+HEADER: :transclude [[file:sample_data/nested.org::*Level 1 Heading]]
 #+HEADER: :transclude-keywords ":level 2"
 #+begin_src org
 #+end_src
 
-** Auto Level
+*** Auto Level
 
 #+HEADER: :transclude [[file:sample_data/nested.org::*Level 1 Heading]]
 #+HEADER: :transclude-keywords ":level auto"
 #+begin_src org
 #+end_src
 
-* DONE Content Filtering Tests
+** DONE Content Filtering Tests
 
-** Only Contents
+*** Only Contents
 
 #+HEADER: :transclude [[file:sample_data/sample.org::*Data Analysis]]
 #+HEADER: :transclude-keywords ":only-contents"
 #+begin_src org
 #+end_src
 
-** Exclude Property Drawers
+*** Exclude Property Drawers
 
 #+HEADER: :transclude [[file:sample_data/sample.org::*Methodology]]
 #+HEADER: :transclude-keywords ":exclude-elements \"property-drawer\""
 #+begin_src org
 #+end_src
 
-** Exclude Multiple Elements
+*** Exclude Multiple Elements
 
 #+HEADER: :transclude [[file:sample_data/sample.org::*Analysis Process]]
 #+HEADER: :transclude-keywords ":exclude-elements \"property-drawer src-block\""
 #+begin_src org
 #+end_src
 
-** No First Heading
+*** No First Heading
 
 #+HEADER: :transclude [[file:sample_data/sample.org::*Data Analysis]]
 #+HEADER: :transclude-keywords ":no-first-heading"
 #+begin_src org
 #+end_src
 
-* DONE Line Range Tests (Extension Required)
+** DONE Line Range Tests (Extension Required)
 
-** Specific Range
+*** Specific Range
 
 #+HEADER: :transclude [[file:sample_data/data.txt]]
 #+HEADER: :transclude-keywords ":lines 5-10"
@@ -79,80 +79,81 @@ Line 9: Eighth data point
 Line 10: Ninth data point
 #+end_example
 
-** From Beginning
+*** From Beginning
 
 #+HEADER: :transclude [[file:sample_data/data.txt]]
 #+HEADER: :transclude-keywords ":lines -5"
 #+begin_example
 #+end_example
 
-** Single Line
+*** Single Line
 
 #+HEADER: :transclude [[file:sample_data/data.txt]]
 #+HEADER: :transclude-keywords ":lines 2-2"
 #+begin_example
 #+end_example
 
-* TODO Thing at Point Tests (Extension Required)
+** TODO Thing at Point Tests (Extension Required)
 
-** DONE Extract S-expression
+*** DONE Extract S-expression
 
 #+HEADER: :transclude [[file:sample_data/code-samples.el::defun process-data]]
 #+HEADER: :transclude-keywords ":thing-at-point sexp"
 #+begin_src elisp
 #+end_src
 
-** TODO Extract Defun 
+*** TODO Extract Defun 
 
 #+HEADER: :transclude [[file:sample_data/code-samples.el::defun calculate-statistics]]
 #+HEADER: :transclude-keywords ":thing-at-point defun"
 #+begin_src elisp
 #+end_src
 
-* TODO Combined Keywords Tests
+** TODO Combined Keywords Tests
 - LEVEL doesnt work
 - EXCLUDE doesnt work
 
-** Level + Only Contents
+*** Level + Only Contents
 
 #+HEADER: :transclude [[file:sample_data/sample.org::*Data Analysis]]
 #+HEADER: :transclude-keywords ":level 3 :only-contents"
 #+begin_src org
 #+end_src
 
-** Level + Exclude
+*** Level + Exclude
 
 #+HEADER: :transclude [[file:sample_data/sample.org::*Methodology]]
 #+HEADER: :transclude-keywords ":level 2 :exclude-elements \"property-drawer\""
 #+begin_src org
 #+end_src
 
-** Only Contents + Exclude + No First Heading
+*** Only Contents + Exclude + No First Heading
 
 #+HEADER: :transclude [[file:sample_data/sample.org::*Data Analysis]]
 #+HEADER: :transclude-keywords ":only-contents :exclude-elements \"property-drawer\" :no-first-heading"
 #+begin_src org
 #+end_src
 
-* DONE - Different Block Types
+** DONE - Different Block Types
 
-** Quote Block
+*** Quote Block
 
 #+HEADER: :transclude [[file:sample_data/sample.org::*References]]
 #+HEADER: :transclude-keywords ":only-contents"
 #+begin_quote
 #+end_quote
 
-** Example Block
+*** Example Block
 
 #+HEADER: :transclude [[file:sample_data/code-samples.el]]
 #+HEADER: :transclude-keywords ":lines 1-15"
 #+begin_example
 #+end_example
 
-** Center Block
+*** Center Block
 
 #+HEADER: :transclude [[file:sample_data/sample.org::*References]]
 #+HEADER: :transclude-keywords ":only-contents :exclude-elements \"quote-block\""
 #+begin_center
 #+end_center
+
