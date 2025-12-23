@@ -12,6 +12,13 @@ for code execution (=:session=, =:results=, =:var=). Content fetched via
 [[https://github.com/nobiot/org-transclusion][org-transclusion]] persists in the buffer file, similarly to using
 ~org-transclusion-detach~
 
+* Showcase
+
+[[https://github.com/gggion/org-transclusion-blocks/blob/screenshots/transclusion-blocks-1.gif?raw=true]]
+[[https://github.com/gggion/org-transclusion-blocks/blob/screenshots/transclusion-blocks-2.gif?raw=true]]
+[[https://github.com/gggion/org-transclusion-blocks/blob/screenshots/transclusion-blocks-3.gif?raw=true]]
+
+
 * Contents :noexport:
 :PROPERTIES:
 :TOC:      :include siblings :depth 1 :ignore this
