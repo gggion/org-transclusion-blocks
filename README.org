@@ -58,20 +58,46 @@ Before (org-transclusion):
 #+end_src
 
 After (org-transclusion-blocks):
+
+External #+HEADER usage:
 #+begin_src org
 ,#+HEADER: :transclude [[file:org-transclusion-blocks.el]]
-,#+HEADER: :transclude-keywords ":lines 869-949"
+,#+HEADER: :transclude-lines 869-949
 ,#+begin_src elisp
 ,#+end_src
 #+end_src
 
+Inline header usage:
+#+begin_src org
+,#+begin_src elisp :transclude [[file:org-transclusion-blocks.el]] :transclude-lines 869-949
+,#+end_src
+#+end_src
+
+Also support variable expansion and PROPERTY inheritance:
+#+begin_src 
+,#+HEADER: :var file-path=org-transclusion-blocks.el
+,#+begin_src elisp :transclude [[file:$file-path]] :transclude-lines 869-949
+,#+end_src
+#+end_src
 
 The header approach enables:
 - /Property inheritance/: Set =:transclude= once in property drawer, inherit in all subtree blocks
+- /Variable Expansion/: Same as with inheritance, transclusion headers can be populated by babel variables (:var) 
 - /Babel integration/: Combine transclusion with =:session=, =:results=, =:exports= in src blocks
 - /Persistent content/: Transcluded text remains in buffer file as if detached.
 - /Block type flexibility/: Use quote, example, export, or custom special blocks
 - /Org syntax escaping/: Automatic escaping prevents markup in transcluded Org content from breaking src blocks
+
+#+begin_quote
+[!TIP]
+transclusion-blocks offers 4 generic headers which can be used from the get go:
+- =:transclude [[LINK]]= -> almost 1:1 equivalency to the normal :transclusion keyword, org link goes here.
+- =:transclude-keywords= -> Any transclusion keyword can go here, basically a wildcard
+- specific transclusion keyword headers, these were created since they're the most commonly used keywords: 
+  - =:transclude-lines= N-N
+  - =:transclude-thing= sexp/defun/etc
+#+end_quote
+
 * Advanced Capability: Component-Based Links
 :PROPERTIES:
 :CUSTOM_ID: advanced-capability-component-based-links
@@ -217,6 +243,10 @@ why their search doesn't work /before/ debugging.
 :PROPERTIES:
 :CUSTOM_ID: quick-start
 :END:
+#+begin_quote
+[!NOTE] 
+This documentation makes use of #+HEADER for readability's sake, all transclusion headers can also be used inline directly in the source block header.
+#+end_quote
 ** Basic Transclusion via Header
 
 Add =:transclude= header to any block:
@@ -473,6 +503,33 @@ Common keywords:
 - =:expand-links= - Expand relative file paths to absolute
 
 See org-transclusion manual for complete keyword reference.
+
+** =:transclude-lines= - explicitly set :lines parameter
+
+#+begin_src org
+,#+HEADER: :transclude [[file:notes.org]]
+,#+HEADER: :transclude-lines 10-20
+,#+begin_src org
+,#+end_src
+#+end_src
+
+Equivalent to org-transclusion keyword:
+#+begin_src org
+#+transclude: [[file:notes.org]] :lines 10-20
+#+end_src
+
+** =:transclude-thing= - explicitly set :thing-at-point parameter
+
+#+begin_src org
+,#+HEADER: :transclude [[file:package.el::\(defun some-function-signature]]
+,#+HEADER: :transclude-thing sexp
+,#+begin_src org
+,#+end_src
+#+end_src
+
+Equivalent to org-transclusion keyword:
+
+: #+transclude: [[file:package.el::\(defun some-function-signature]] :thing-at-point
 
 ** =:transclude-escape-org= - Control Org Syntax Escaping
 
@@ -848,6 +905,39 @@ With prefix argument =C-u=:
 - Copies source content instead of transcluding (detached)
 - Content is editable, not linked to source
 
+** =org-transclusion-blocks-lines-menu=
+
+*Requires =:transclude-lines=  header present in source block.*
+
+Interactive range adjustment via transient menu. All commands accept prefix
+argument for custom increment (default: 1 line).
+
+*Controls:*
+- =p/n= - Scroll range up/down 
+- =+/-= - Expand/shrink symmetrically
+- =u/d= - Expand upward/downward (only downwards)
+- =U/D= - Shrink from top/bottom (only upwards)
+- =s= - Set absolute range (prompts for start/end)
+- =w= - Set range width (centers on current midpoint)
+- =q= - Quit menu
+
+Changes apply immediately. All modifications made while in the transient menu
+are consolidated into single undo step on exit, instead of one for each ~lines~
+change.
+
+Example workflow:
+1. Position point in transcluded block
+2. =M-x org-transclusion-blocks-lines-menu=
+3. Use =n= repeatedly to scroll down through source
+4. Use =+= to expand context around current range
+5. Use =U= to trim unwanted lines from top
+6. Press =q= when satisfied
+
+Boundary enforcement:
+- Upward operations prevented when start reaches line 1
+- Downward operations prevented when end reaches source maximum
+- Shrink operations prevented when they would invert range (start > end)
+
 ** =org-transclusion-blocks-add-all=
 
 Process all blocks with transclusion headers in buffer or region.
@@ -903,6 +993,7 @@ Registered link types:
 #+end_src
 
 Use =org-transclusion-blocks-describe-type= for detailed information about specific types.
+
 
 * Configuration
 :PROPERTIES:
