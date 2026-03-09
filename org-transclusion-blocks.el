@@ -347,31 +347,65 @@ Examples:
 (defun org-transclusion-blocks--vector-to-link-string (vec)
   "Convert vector VEC to bracket link string.
 
-VEC is a vector parsed by Babel from [[link]] syntax.
-Babel parses [[link]] as (vector (vector \\='link-symbol)).
+VEC is a vector produced by Babel's Elisp `read' from unquoted
+bracket link syntax in header arguments.
 
-Returns string \"[[link]]\" with proper escaping preserved.
+When `org-babel-parse-header-arguments' encounters an unquoted
+value like [[file:path::*Level 1 Heading]], the Elisp reader
+interprets [[ as nested vector literal and splits contents at
+whitespace.  The result is a 1-element outer vector containing
+an inner vector of symbols and integers:
+
+  [[file:path::*A B]] -> (vector (vector \\='file:path::*A \\='B))
+
+This function unwraps the nesting and concatenates all inner
+elements with spaces to reconstruct the original link text,
+then wraps in [[ ]] brackets.
+
+Bracket links containing Elisp-significant characters like
+unmatched parentheses cause `org-babel-read' errors before this
+function is reached.  Escape such characters with backslash in
+the search string:
+
+  [[file:path::\\(defun my-func]]
+
+Returns string \"[[link]]\" with proper bracket wrapping.
 
 Examples:
   Input: [[file:path]]
   Babel: (vector (vector \\='file:path))
   Output: \"[[file:path]]\"
 
-  Input: [[file:path::\\(defun]]
-  Babel: (vector (vector \\='file:path::\\(defun))
-  Output: \"[[file:path::\\(defun]]\""
-  ;; Unwrap nested vectors to find the innermost element
-  (let ((elem vec))
-    (while (and (vectorp elem) (> (length elem) 0))
-      (setq elem (aref elem 0)))
+  Input: [[file:p::*A B C]]
+  Babel: (vector (vector \\='file:p::*A \\='B \\='C))
+  Output: \"[[file:p::*A B C]]\""
+  ;; Unwrap single-element outer vector to reach content vector
+  (let ((inner vec))
+    (while (and (vectorp inner)
+                (= (length inner) 1)
+                (vectorp (aref inner 0)))
+      (setq inner (aref inner 0)))
 
-    ;; Convert innermost element to string and wrap in brackets
-    (let ((link-content
-           (cond
-            ((symbolp elem) (symbol-name elem))
-            ((stringp elem) elem)
-            (t (format "%s" elem)))))
-      (concat "[[" link-content "]]"))))
+    ;; inner is now the flat vector of link components
+    (let ((parts
+           (if (vectorp inner)
+               (mapconcat
+                (lambda (elem)
+                  (cond
+                   ((symbolp elem) (symbol-name elem))
+                   ((stringp elem) elem)
+                   ((numberp elem) (number-to-string elem))
+                   (t (format "%s" elem))))
+                inner
+                " ")
+             ;; Fallback: single non-vector element
+             (cond
+              ((symbolp inner) (symbol-name inner))
+              ((stringp inner) inner)
+              (t (format "%s" inner))))))
+
+      ;; Wrap in brackets unconditionally since read consumes them
+      (concat "[[" parts "]]"))))
 
 (defun org-transclusion-blocks--expand-header-vars (params)
   "Expand variable references in transclusion-related PARAMS.
