@@ -51,7 +51,7 @@ Expected behavior:
 #+HEADER: :var filepath="org-transclusion-blocks.el"
 #+HEADER: :transclude-type orgit-file
 #+HEADER: :orgit-repo $repo
-#+HEADER: :orgit-rev $master
+#+HEADER: :orgit-rev $branch
 #+HEADER: :orgit-file $filepath
 #+HEADER: :transclude-lines 90-100
 #+begin_src elisp
