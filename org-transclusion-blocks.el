@@ -632,6 +632,9 @@ ELEMENT is org-element block context.
 For src-block, uses `org-src--contents-area'.
 For other blocks, calculates bounds from element properties.
 
+Skips all affiliated keywords (#+NAME:, #+CAPTION:, #+ATTR_*:,
+#+HEADER:, #+RESULTS:) before the #+begin_ line.
+
 Used by `org-transclusion-blocks--update-content' and
 `org-transclusion-blocks--apply-timestamp'."
   (if (eq (org-element-type element) 'src-block)
@@ -639,7 +642,7 @@ Used by `org-transclusion-blocks--update-content' and
         (cons (nth 0 area) (nth 1 area)))
     (save-excursion
       (goto-char (org-element-property :begin element))
-      (while (looking-at "^[ \t]*#\\+HEADER:")
+      (while (looking-at "^[ \t]*#\\+[^ \t\n:]+:")
         (forward-line))
       (unless (looking-at "^[ \t]*#\\+begin_")
         (error "Expected #+begin line at position %d" (point)))
