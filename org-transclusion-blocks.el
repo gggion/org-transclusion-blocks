@@ -135,15 +135,6 @@ Set to 0 to disable indicator."
   :group 'org-transclusion-blocks
   :package-version '(org-transclusion-blocks . "0.1.0"))
 
-(defcustom org-transclusion-blocks-timestamp-property 'org-transclusion-blocks-fetched
-  "Text property name for storing fetch timestamp.
-
-Applied to transcluded content in block body.
-Used for future refresh functionality."
-  :type 'symbol
-  :group 'org-transclusion-blocks
-  :package-version '(org-transclusion-blocks . "0.1.0"))
-
 (defcustom org-transclusion-blocks-show-interaction-warnings t
   "Whether to show warnings for component interactions.
 
@@ -192,63 +183,6 @@ Does not affect non-Org sources (Python files, text files, etc.)."
   :group 'org-transclusion-blocks
   :package-version '(org-transclusion-blocks . "0.2.0"))
 
-
-;;;; Internal Variables
-
-(defvar org-transclusion-blocks--last-fetch-time nil
-  "Timestamp of most recent successful content fetch.
-
-Buffer-local.
-Used by `org-transclusion-blocks--show-indicator'.")
-(make-variable-buffer-local 'org-transclusion-blocks--last-fetch-time)
-
-(defvar-local org-transclusion-blocks--last-payload nil
-  "Cached payload from most recent content fetch.
-Used by metadata application to avoid re-fetching.")
-
-(defvar org-transclusion-blocks-yank-excluded-properties
-  '(org-transclusion-blocks-keyword
-    org-transclusion-blocks-link
-    org-transclusion-blocks-max-line
-    org-transclusion-blocks-fetched
-    org-transclusion-blocks-id
-    org-transclusion-blocks-tc-type
-    org-transclusion-blocks-src-overlay)
-  "Text properties excluded from yank operations.
-
-These properties are implementation details for org-transclusion-blocks
-and should not propagate when users copy transcluded content.
-
-Unlike org-transclusion.el, we apply this exclusion permanently rather
-than during activation/deactivation cycles, since block transclusions
-are one-shot operations without a deactivation phase.")
-
-(defvar-local org-transclusion-blocks--suppress-overlays nil
-  "When non-nil, skip overlay creation during transclusion.
-
-Set by transient menus during interactive range adjustment to
-avoid expensive overlay operations and redisplay on every
-incremental change.
-
-Text properties are still applied immediately for metadata
-tracking.  Overlays are created when this variable is nil or when
-`org-transclusion-blocks--ensure-overlays-applied' is called
-after transient exits.
-
-Cleared by `org-transclusion-blocks--ensure-overlays-applied'.")
-
-(defvar-local org-transclusion-blocks--undo-handle nil
-  "Change group handle for transient menu undo consolidation.
-
-Set by `org-transclusion-blocks-lines-menu' when entering the
-transient menu.  Cleared by cleanup function on exit.
-
-Used by `org-transclusion-blocks--apply-metadata' to determine
-whether to suppress text property undo entries.  When non-nil,
-text property changes are not recorded in undo list to prevent
-undo corruption when undoing/redoing content changes.
-
-See Info node `(elisp)Atomic Changes' for change group protocol.")
 
 ;;;; Variable Expansion Support
 ;;
@@ -1338,7 +1272,6 @@ KEYWORD-PLIST is org-transclusion keyword plist.
 Returns content string or nil.
 
 Delegates to `org-transclusion-add-functions' hook.
-Caches payload in `org-transclusion-blocks--last-payload'.
 
 Called by `org-transclusion-blocks-add'."
   (when-let* ((link-string (plist-get keyword-plist :link))
@@ -1348,229 +1281,28 @@ Called by `org-transclusion-blocks-add'."
                             'org-transclusion-add-functions
                             link
                             keyword-plist)))
-        (setq org-transclusion-blocks--last-payload payload)
         (plist-get payload :src-content)))))
 
-;;;; Metadata insertion
-(defun org-transclusion-blocks--find-existing-overlay (beg end)
-  "Find existing transclusion overlay in region BEG to END.
+;;;; Content Insertion
 
-Returns overlay with `org-transclusion-blocks-overlay' property
-or nil if none exists.
-
-Used by `org-transclusion-blocks--apply-metadata' to reuse
-overlays across content updates."
-  (seq-find
-   (lambda (ov)
-     (overlay-get ov 'org-transclusion-blocks-overlay))
-   (overlays-in beg end)))
-
-(defun org-transclusion-blocks--get-or-create-id (beg end)
-  "Return existing transclusion ID for region BEG to END or create new one.
-
-Checks text properties in region for existing `org-transclusion-blocks-id'.
-If found, returns that ID to maintain stability across updates.
-Otherwise generates new UUID.
-
-ID stability is critical for overlay pairing -- changing IDs on
-every update breaks source overlay tracking."
-  (or (get-text-property beg 'org-transclusion-blocks-id)
-      (org-id-uuid)))
-
-(defun org-transclusion-blocks--ensure-overlays-applied ()
-  "Apply overlays if suppression was active.
-
-Called after transient menu exits to create overlays for the
-current transclusion after interactive adjustment completes.
-
-Text properties are already present from
-`org-transclusion-blocks-add' calls during adjustment, so this
-function only creates overlays using existing metadata."
-  (when org-transclusion-blocks--suppress-overlays
-    (setq org-transclusion-blocks--suppress-overlays nil)
-    (save-excursion
-      (let ((element (org-element-at-point)))
-        (when (org-transclusion-blocks--supported-block-p element)
-          (let* ((block-beg (org-element-property :begin element))
-                 (block-end (org-element-property :end element))
-                 (id (get-text-property block-beg 'org-transclusion-blocks-id))
-                 (keyword-plist (get-text-property block-beg 'org-transclusion-blocks-keyword))
-                 (link-string (get-text-property block-beg 'org-transclusion-blocks-link)))
-            (when (and id keyword-plist link-string)
-              (let* ((payload (org-transclusion-blocks--get-payload-for-metadata link-string keyword-plist))
-                     (src-beg (plist-get payload :src-beg))
-                     (src-end (plist-get payload :src-end))
-                     (src-buf (plist-get payload :src-buf)))
-                (when (and src-beg src-end src-buf)
-                  (org-transclusion-blocks--create-overlays
-                   block-beg block-end src-beg src-end src-buf id))))))))))
-
-(defun org-transclusion-blocks--create-overlays (block-beg block-end src-beg src-end src-buf id)
-  "Create transclusion overlays for block and source regions.
-
-BLOCK-BEG and BLOCK-END delimit transclusion block in current buffer.
-SRC-BEG and SRC-END delimit source region in SRC-BUF.
-ID is unique transclusion identifier.
-
-Deletes existing overlays with matching ID before creating new ones
-to avoid accumulation while preserving overlays from other transclusions.
-
-Source overlays do NOT install `modification-hooks' to avoid
-interfering with org-transclusion's own overlay management in the
-source buffer.
-
-Called by `org-transclusion-blocks--apply-metadata' and
-`org-transclusion-blocks--ensure-overlays-applied'."
-  (let ((tc-buffer (current-buffer)))
-    ;; Delete existing overlays for THIS transclusion only
-    (dolist (ov (overlays-in block-beg block-end))
-      (when (and (overlay-get ov 'org-transclusion-blocks-overlay)
-                 (or (not (overlay-get ov 'org-transclusion-blocks-id))
-                     (equal (overlay-get ov 'org-transclusion-blocks-id) id)))
-        (delete-overlay ov)))
-
-    ;; Create fresh overlays
-    (let ((ov-src (make-overlay src-beg src-end src-buf))
-          (ov-tc (make-overlay block-beg block-end)))
-
-      ;; Configure source overlay
-      ;; NOTE: No modification-hooks, no read-only, no fringe indicators.
-      ;; This overlay is purely for tracking the source region.
-      (overlay-put ov-src 'org-transclusion-blocks-by id)
-      (overlay-put ov-src 'org-transclusion-blocks-buffer tc-buffer)
-      (overlay-put ov-src 'evaporate t)
-      (overlay-put ov-src 'org-transclusion-blocks-pair ov-tc)
-      (overlay-put ov-src 'org-transclusion-blocks-id id)
-
-      ;; Configure transclusion overlay
-      (overlay-put ov-tc 'evaporate t)
-      (overlay-put ov-tc 'org-transclusion-blocks-pair ov-src)
-      (overlay-put ov-tc 'org-transclusion-blocks-overlay t)
-      (overlay-put ov-tc 'org-transclusion-blocks-id id)
-
-      ;; Update text property to reference new source overlay
-      (put-text-property block-beg block-end
-                         'org-transclusion-blocks-src-overlay ov-src))))
-
-(defun org-transclusion-blocks--apply-metadata (block-beg block-end keyword-plist link-string)
-  "Apply transclusion metadata properties to block region BLOCK-BEG to BLOCK-END.
-
-BLOCK-BEG is beginning of entire block including delimiters.
-BLOCK-END is end of entire block including delimiters.
-KEYWORD-PLIST is the org-transclusion keyword plist.
-LINK-STRING is the constructed link string (with [[ ]] brackets).
-
-Always applies text properties immediately for metadata tracking.
-Creates overlays only when `org-transclusion-blocks--suppress-overlays'
-is nil.
-
-When `org-transclusion-blocks--undo-handle' is non-nil (during
-transient menu), text property changes are not recorded in undo
-list to prevent undo corruption when undoing/redoing content
-changes.
-
-Properties stored (all namespaced to org-transclusion-blocks):
-- `org-transclusion-blocks-keyword' - Full keyword plist
-- `org-transclusion-blocks-link' - Constructed link string
-- `org-transclusion-blocks-max-line' - Source buffer line count
-- `org-transclusion-blocks-id' - Unique transclusion identifier
-- `org-transclusion-blocks-tc-type' - Transclusion type string
-- `org-transclusion-blocks-src-overlay' - Source overlay
-
-These properties are deliberately distinct from org-transclusion's
-`org-transclusion-id', `org-transclusion-type', and
-`org-transclusion-pair' to prevent org-transclusion's save hooks
-from detecting block transclusions as active transclusions and
-attempting removal.
-
-Called by `org-transclusion-blocks-add'."
-  (let* ((max-line (org-transclusion-blocks--get-source-line-count link-string))
-         (payload (org-transclusion-blocks--get-payload-for-metadata link-string keyword-plist))
-         (src-beg (plist-get payload :src-beg))
-         (src-end (plist-get payload :src-end))
-         (src-buf (plist-get payload :src-buf))
-         (tc-type (plist-get payload :tc-type))
-         (id (or (get-text-property block-beg 'org-transclusion-blocks-id)
-                 (org-id-uuid)))
-         (undo-list-before (when org-transclusion-blocks--undo-handle
-                             buffer-undo-list)))
-
-    ;; Apply text properties
-    (if (and src-beg src-end src-buf)
-        (add-text-properties
-         block-beg block-end
-         `(org-transclusion-blocks-keyword ,keyword-plist
-           org-transclusion-blocks-link ,link-string
-           org-transclusion-blocks-max-line ,max-line
-           org-transclusion-blocks-tc-type ,tc-type
-           org-transclusion-blocks-id ,id))
-      (add-text-properties
-       block-beg block-end
-       `(org-transclusion-blocks-keyword ,keyword-plist
-         org-transclusion-blocks-link ,link-string
-         org-transclusion-blocks-max-line ,max-line)))
-
-    ;; Remove text property undo entries during transient menu
-    (when org-transclusion-blocks--undo-handle
-      (setq buffer-undo-list undo-list-before))
-
-    ;; Create overlays only when not suppressed
-    (unless org-transclusion-blocks--suppress-overlays
-      (when (and src-beg src-end src-buf)
-        (org-transclusion-blocks--create-overlays
-         block-beg block-end src-beg src-end src-buf id)))))
-
-(defun org-transclusion-blocks--get-payload-for-metadata (link-string keyword-plist)
-  "Obtain payload for metadata storage from LINK-STRING and KEYWORD-PLIST.
-
-LINK-STRING is complete link including [[ ]] brackets.
-KEYWORD-PLIST is org-transclusion keyword plist.
-
-Returns payload plist with :src-beg, :src-end, :src-buf, :tc-type.
-
-This is a lightweight call to org-transclusion-add-functions
-solely for metadata extraction, not content fetching.
-
-Called by `org-transclusion-blocks--apply-metadata'."
-  (or org-transclusion-blocks--last-payload
-      (when-let* ((link (org-transclusion-wrap-path-to-link link-string)))
-        (run-hook-with-args-until-success
-         'org-transclusion-add-functions
-         link
-         keyword-plist))))
-
-(defun org-transclusion-blocks--get-source-line-count (link-string)
-  "Return line count of buffer targeted by LINK-STRING.
+(defun org-transclusion-blocks--source-line-count (link-string)
+  "Return line count of source targeted by LINK-STRING.
 
 LINK-STRING is complete link including [[ ]] brackets.
 
-Returns nil if buffer cannot be opened or has no content.
+Returns nil if source cannot be opened.
 
-Used by `org-transclusion-blocks--apply-metadata'."
+Used by `org-transclusion-blocks-lines--at-upper-boundary-p'."
   (condition-case nil
-      (let ((link (org-transclusion-wrap-path-to-link link-string)))
+      (when-let* ((link (org-transclusion-wrap-path-to-link link-string)))
         (save-window-excursion
           (save-excursion
-            ;; Open link in background
             (org-link-open link)
-            ;; Count lines in opened buffer
             (with-current-buffer (current-buffer)
               (count-lines (point-min) (point-max))))))
     (error nil)))
-;;;; Content Insertion
 
-(defun org-transclusion-blocks--apply-timestamp (beg end)
-  "Apply fetch timestamp property to region BEG to END.
 
-BEG is buffer position.
-END is buffer position.
-
-Sets `org-transclusion-blocks-timestamp-property' text property.
-
-Called by `org-transclusion-blocks-add'."
-  (add-text-properties beg end
-                       (list org-transclusion-blocks-timestamp-property
-                             (current-time))))
 
 (defun org-transclusion-blocks--show-indicator (element)
   "Display success indicator overlay on block ELEMENT.
@@ -1614,24 +1346,76 @@ Called by `org-transclusion-blocks-add'."
                                   (when (overlay-buffer overlay)
                                     (delete-overlay overlay)))
                                 ov)))
-        (overlay-put ov 'org-transclusion-blocks-timer timer))))
-
-  ;; (when org-transclusion-blocks--last-fetch-time
-  ;; (message "Content fetched at %s"
-  ;;          (format-time-string "%H:%M:%S"
-  ;;                              org-transclusion-blocks--last-fetch-time)))
-  )
+        (overlay-put ov 'org-transclusion-blocks-timer timer)))))
 
 (defun org-transclusion-blocks-transcluded-p ()
-  "Return non-nil if block at point has transclusion metadata.
+  "Return non-nil if block at point has transclusion headers and content.
 
-Checks `org-transclusion-blocks-keyword' text property on block start.
+Checks for :transclude or :transclude-type headers and non-empty
+block body.
 
-Used by `org-transclusion-blocks-remove' to guard content removal."
+Used by UI commands to determine block state."
+  (let* ((element (org-element-at-point)))
+    (when (org-transclusion-blocks--supported-block-p element)
+      (let* ((bounds (org-transclusion-blocks--get-content-bounds element))
+             (has-content (/= (car bounds) (cdr bounds)))
+             (type (org-element-type element))
+             (params (if (eq type 'src-block)
+                         (nth 2 (org-babel-get-src-block-info 'no-eval))
+                       (org-transclusion-blocks--parse-headers-direct element))))
+        (and has-content
+             (or (assq :transclude params)
+                 (assq :transclude-type params)))))))
+
+;;; Metadata Generation
+
+(defun org-transclusion-blocks--reconstruct-metadata ()
+  "Reconstruct transclusion metadata for block at point from headers.
+
+Parses headers to rebuild keyword plist, link string, and source
+coordinates without storing any persistent state.
+
+Returns plist with :keyword-plist, :link-string, :src-beg,
+:src-end, :src-buf, :tc-type, or nil if block has no transclusion
+headers.
+
+This function re-fetches the payload from `org-transclusion-add-functions'
+to obtain source coordinates.  It is not suitable for tight loops.
+
+Intended for future live-sync integration where org-transclusion
+machinery requires specific text properties or overlays.  Call at
+the point of need rather than storing metadata permanently.
+
+Block transclusions are declarative -- all transclusion parameters
+live in headers and can be reconstructed at any time.  This function
+provides the bridge to org-transclusion's imperative metadata model
+when needed.
+
+See `org-transclusion-blocks-add' for header parsing pipeline."
   (let* ((element (org-element-at-point))
-         (block-beg (org-element-property :begin element)))
-    (and (org-transclusion-blocks--supported-block-p element)
-         (get-text-property block-beg 'org-transclusion-blocks-keyword))))
+         (type (org-element-type element)))
+    (when (org-transclusion-blocks--supported-block-p element)
+      (save-excursion
+        (goto-char (org-element-property :begin element))
+        (let* ((params (if (eq type 'src-block)
+                           (nth 2 (org-babel-get-src-block-info 'no-eval))
+                         (org-transclusion-blocks--parse-headers-direct element)))
+               (expanded-params (org-transclusion-blocks--expand-header-vars params))
+               (keyword-plist (org-transclusion-blocks--params-to-plist expanded-params))
+               (link-string (plist-get keyword-plist :link)))
+          (when keyword-plist
+            (when-let* ((link (org-transclusion-wrap-path-to-link link-string))
+                        (payload (save-window-excursion
+                                   (run-hook-with-args-until-success
+                                    'org-transclusion-add-functions
+                                    link
+                                    keyword-plist))))
+              (list :keyword-plist keyword-plist
+                    :link-string link-string
+                    :src-beg (plist-get payload :src-beg)
+                    :src-end (plist-get payload :src-end)
+                    :src-buf (plist-get payload :src-buf)
+                    :tc-type (plist-get payload :tc-type)))))))))
 
 ;;;; Public Commands
 
@@ -1674,21 +1458,6 @@ Strips trailing blank lines from fetched content unless :lines or
 whitespace in element boundaries.  Line-bounded transclusions
 preserve all whitespace for positional stability.
 
-Stores metadata in text properties for boundary checking:
-- `org-transclusion-blocks-keyword' - keyword plist
-- `org-transclusion-blocks-link' - constructed link
-- `org-transclusion-blocks-max-line' - source line count
-- `org-transclusion-blocks-id' - unique identifier
-- `org-transclusion-blocks-tc-type' - transclusion type
-- `org-transclusion-blocks-src-overlay' - source overlay
-
-All properties use the org-transclusion-blocks namespace to avoid
-interference with org-transclusion's save/remove hooks.
-
-Text properties are always applied immediately.  Overlays are
-created only when `org-transclusion-blocks--suppress-overlays' is
-nil.
-
 See `org-transclusion-blocks-list-types' for available types.
 
 Returns t on success, nil if no headers or fetch failed."
@@ -1727,106 +1496,60 @@ Returns t on success, nil if no headers or fetch failed."
                   (message "No transclusion headers found")
                   nil)
 
-              (let ((link-string (plist-get keyword-plist :link)))
-                (if-let ((content (org-transclusion-blocks--fetch-content keyword-plist)))
-                    (progn
-                      ;; Strip trailing blanks from :post-blank unless
-                      ;; line-bounded transclusion is active
-                      (unless (or (org-transclusion-blocks--get-lines-spec expanded-params)
-                                  (org-transclusion-blocks--get-thing-spec expanded-params))
-                        (setq content (org-transclusion-blocks--strip-trailing-blanks content)))
+              (if-let ((content (org-transclusion-blocks--fetch-content keyword-plist)))
+                  (progn
+                    ;; Strip trailing blanks from :post-blank unless
+                    ;; line-bounded transclusion is active
+                    (unless (or (org-transclusion-blocks--get-lines-spec expanded-params)
+                                (org-transclusion-blocks--get-thing-spec expanded-params))
+                      (setq content (org-transclusion-blocks--strip-trailing-blanks content)))
 
-                      (when (org-transclusion-blocks--should-escape-p keyword-plist expanded-params)
-                        (setq content (org-transclusion-blocks--escape-org-syntax content)))
+                    (when (org-transclusion-blocks--should-escape-p keyword-plist expanded-params)
+                      (setq content (org-transclusion-blocks--escape-org-syntax content)))
 
-                      (let ((block-start (org-element-property :begin element)))
-                        (org-transclusion-blocks--update-content element content)
-                        (setq org-transclusion-blocks--last-fetch-time (current-time))
+                    (let ((block-start (org-element-property :begin element)))
+                      (org-transclusion-blocks--update-content element content)
 
-                        ;; Force re-parse
-                        (goto-char block-start)
-                        (setq element (org-element-at-point))
+                      ;; Re-parse for indicator positioning
+                      (goto-char block-start)
+                      (setq element (org-element-at-point))
 
-                        (let* ((bounds (org-transclusion-blocks--get-content-bounds element))
-                               (content-beg (car bounds))
-                               (content-end (cdr bounds))
-                               (block-beg (org-element-property :begin element))
-                               (block-end (org-element-property :end element)))
+                      (org-transclusion-blocks--show-indicator element)
+                      t))
 
-                          (unless (and block-beg block-end content-beg content-end
-                                       (< block-beg content-beg)
-                                       (< content-beg content-end)
-                                       (< content-end block-end))
-                            (error "Invalid block boundaries after content insertion: block[%s-%s] content[%s-%s]"
-                                   block-beg block-end content-beg content-end))
-
-                          (org-transclusion-blocks--apply-timestamp content-beg content-end)
-                          (org-transclusion-blocks--apply-metadata block-beg block-end keyword-plist link-string))
-
-                        (org-transclusion-blocks--show-indicator element)
-                        t))
-
-                  (message "Failed to fetch transclusion content")
-                  nil)))))))))
+                (message "Failed to fetch transclusion content")
+                nil))))))))
 
 ;;;###autoload
-(defun org-transclusion-blocks-remove (&optional keep-properties)
+(defun org-transclusion-blocks-remove ()
   "Remove transcluded content from block at point.
 
 Delete content between block delimiters while preserving block
 structure (#+HEADER lines, #+begin/#+end delimiters).
 
-When KEEP-PROPERTIES is non-nil (prefix argument), preserve
-transclusion metadata properties on block for re-transclusion
-via `org-transclusion-blocks-add'.  Otherwise, remove all
-transclusion-related text properties and overlays.
-
 Point must be on or within a supported block type.
 
-Return t if content was removed, nil if block had no transclusion
-metadata.
+Return t if content was removed, nil if block is empty.
 
-Uses `org-transclusion-blocks-transcluded-p' to check metadata.
 Uses `org-transclusion-blocks--get-content-bounds' to locate content.
 
 Inverse of `org-transclusion-blocks-add'."
-  (interactive "P")
+  (interactive)
   (let* ((element (org-element-at-point))
          (type (org-element-type element)))
 
     (unless (org-transclusion-blocks--supported-block-p element)
       (user-error "Not on a supported block (point on: %s)" type))
 
-    (if (not (org-transclusion-blocks-transcluded-p))
-        (progn
-          (message "Block has no transclusion metadata")
-          nil)
+    (let* ((bounds (org-transclusion-blocks--get-content-bounds element))
+           (content-beg (car bounds))
+           (content-end (cdr bounds)))
 
-      (let* ((block-beg (org-element-property :begin element))
-             (block-end (org-element-property :end element))
-             (bounds (org-transclusion-blocks--get-content-bounds element))
-             (content-beg (car bounds))
-             (content-end (cdr bounds)))
-
-        ;; Delete content
+      (if (= content-beg content-end)
+          (progn
+            (message "Block is already empty")
+            nil)
         (delete-region content-beg content-end)
-
-        ;; Remove properties and overlays unless preservation requested
-        (unless keep-properties
-          (remove-text-properties
-           block-beg block-end
-           '(org-transclusion-blocks-keyword nil
-             org-transclusion-blocks-link nil
-             org-transclusion-blocks-max-line nil
-             org-transclusion-blocks-fetched nil
-             org-transclusion-blocks-id nil
-             org-transclusion-blocks-tc-type nil
-             org-transclusion-blocks-src-overlay nil))
-
-          (dolist (ov (overlays-in block-beg block-end))
-            (when (overlay-get ov 'org-transclusion-blocks-overlay)
-              (delete-overlay ov))))
-
         (message "Removed transcluded content from %s block" type)
         t))))
 
@@ -1852,18 +1575,6 @@ Useful for testing validator configurations during development."
             (message "Validation passed for %s block" type))
         (error
          (message "Validation failed: %s" (error-message-string err)))))))
-
-(defun org-transclusion-blocks--ensure-yank-exclusions ()
-  "Add transclusion properties to `yank-excluded-properties' if missing.
-
-This function is idempotent and safe to call multiple times.
-It preserves any existing exclusions while adding our properties."
-  (dolist (prop org-transclusion-blocks-yank-excluded-properties)
-    (unless (memq prop yank-excluded-properties)
-      (push prop yank-excluded-properties))))
-
-;; Install exclusions at load time
-(org-transclusion-blocks--ensure-yank-exclusions)
 
 (provide 'org-transclusion-blocks)
 ;;; org-transclusion-blocks.el ends here

@@ -42,9 +42,6 @@
 (require 'org-transclusion-blocks-headers)
 (require 'transient)
 
-;;;; Compiler Declarations
-(defvar org-transclusion-blocks--undo-handle)
-
 ;;;; Customization
 
 (defgroup org-transclusion-blocks-lines nil
@@ -66,14 +63,21 @@ Used when no prefix argument provided to transient suffixes."
 
 Used to prevent downward scroll/expansion when already at bottom.
 
-Returns nil if no metadata available."
+Queries source buffer line count via headers.
+Returns nil if source cannot be determined."
   (let* ((current-range (org-transclusion-blocks-lines--get-current-range))
-         (current-end (cdr current-range))
-         (element (org-element-at-point))
-         (bounds (org-transclusion-blocks--get-content-bounds element))
-         (beg (car bounds))
-         (max-line (get-text-property beg 'org-transclusion-blocks-max-line)))
-    (and current-end max-line (>= current-end max-line))))
+         (current-end (cdr current-range)))
+    (when current-end
+      (let* ((element (org-element-at-point))
+             (type (org-element-type element))
+             (params (if (eq type 'src-block)
+                         (nth 2 (org-babel-get-src-block-info 'no-eval))
+                       (org-transclusion-blocks--parse-headers-direct element)))
+             (expanded-params (org-transclusion-blocks--expand-header-vars params))
+             (keyword-plist (org-transclusion-blocks--params-to-plist expanded-params))
+             (link-string (plist-get keyword-plist :link))
+             (max-line (org-transclusion-blocks--source-line-count link-string)))
+        (and max-line (>= current-end max-line))))))
 
 (defun org-transclusion-blocks-lines--at-lower-boundary-p ()
   "Return non-nil if range start is at line 1.
@@ -251,11 +255,7 @@ If range is 10-20, scrolling down by 3 produces 13-23.
 Prevented when end already at source maximum line."
   (interactive "p")
   (if (org-transclusion-blocks-lines--at-upper-boundary-p)
-      (let* ((element (org-element-at-point))
-             (bounds (org-transclusion-blocks--get-content-bounds element))
-             (beg (car bounds))
-             (max-line (get-text-property beg 'org-transclusion-blocks-max-line)))
-        (message "Cannot scroll beyond end of source (line %d)" max-line))
+      (message "Cannot scroll beyond end of source")
     (let* ((current (org-transclusion-blocks-lines--get-current-range))
            (start (car current))
            (end (cdr current)))
@@ -328,11 +328,7 @@ Example:
 Prevented when end already at source maximum line."
   (interactive "p")
   (if (org-transclusion-blocks-lines--at-upper-boundary-p)
-      (let* ((element (org-element-at-point))
-             (bounds (org-transclusion-blocks--get-content-bounds element))
-             (beg (car bounds))
-             (max-line (get-text-property beg 'org-transclusion-blocks-max-line)))
-        (message "Cannot expand beyond end of source (line %d)" max-line))
+      (message "Cannot expand beyond end of source")
     (let* ((current (org-transclusion-blocks-lines--get-current-range))
            (start (car current))
            (end (cdr current)))
@@ -395,26 +391,12 @@ Errors if end would go below start."
 (defun org-transclusion-blocks--lines-menu-cleanup ()
   "Cleanup function for lines menu transient exit.
 
-Consolidates undo history, applies overlays, and removes itself
-from hook.
+Removes itself from hook.
 
-Called after transient exits to finalize all changes made during
-interactive adjustment as a single undo unit."
-  (unwind-protect
-      (progn
-        ;; Consolidate undo history if handle exists
-        (when org-transclusion-blocks--undo-handle
-          (accept-change-group org-transclusion-blocks--undo-handle)
-          (undo-amalgamate-change-group org-transclusion-blocks--undo-handle)
-          (setq org-transclusion-blocks--undo-handle nil))
-
-        ;; Apply overlays
-        (org-transclusion-blocks--ensure-overlays-applied))
-
-    ;; Always remove hook
-    (remove-hook 'transient-exit-hook
-                 #'org-transclusion-blocks--lines-menu-cleanup
-                 t)))
+Called after transient exits."
+  (remove-hook 'transient-exit-hook
+               #'org-transclusion-blocks--lines-menu-cleanup
+               t))
 
 ;;;; Transient Menu
 
@@ -423,33 +405,12 @@ interactive adjustment as a single undo unit."
   "Adjust line range for transclusion at point.
 
 All commands accept prefix argument for custom increment.
-Default increment is `org-transclusion-blocks-lines-default-increment'.
-
-Suppresses overlay creation during adjustment via
-`org-transclusion-blocks--suppress-overlays' to improve
-performance.  Overlays are created once on menu exit.
-
-All changes made during menu interaction are amalgamated into
-a single undo step using the change group protocol."
+Default increment is `org-transclusion-blocks-lines-default-increment'."
   (interactive)
-
-  ;; Prepare change group for undo consolidation
-  (let ((handle (prepare-change-group)))
-    (setq org-transclusion-blocks--undo-handle handle)
-
-    ;; Activate the change group
-    (activate-change-group handle)
-
-    ;; Set suppression flag before entering transient
-    (setq org-transclusion-blocks--suppress-overlays t)
-
-    ;; Add exit hook for this buffer only
-    (add-hook 'transient-exit-hook
-              #'org-transclusion-blocks--lines-menu-cleanup
-              nil t)
-
-    ;; Enter the transient menu
-    (transient-setup 'org-transclusion-blocks-lines-menu-impl)))
+  (add-hook 'transient-exit-hook
+            #'org-transclusion-blocks--lines-menu-cleanup
+            nil t)
+  (transient-setup 'org-transclusion-blocks-lines-menu-impl))
 
 (transient-define-prefix org-transclusion-blocks-lines-menu-impl ()
   "Implementation of line range adjustment menu.
