@@ -1565,6 +1565,17 @@ Called by `org-transclusion-blocks-add'."
   ;;                              org-transclusion-blocks--last-fetch-time)))
   )
 
+(defun org-transclusion-blocks-transcluded-p ()
+  "Return non-nil if block at point has transclusion metadata.
+
+Checks `org-transclusion-blocks-keyword' text property on block start.
+
+Used by `org-transclusion-blocks-remove' to guard content removal."
+  (let* ((element (org-element-at-point))
+         (block-beg (org-element-property :begin element)))
+    (and (org-transclusion-blocks--supported-block-p element)
+         (get-text-property block-beg 'org-transclusion-blocks-keyword))))
+
 ;;;; Public Commands
 
 ;;;###autoload
@@ -1706,57 +1717,64 @@ Returns t on success, nil if no headers or fetch failed."
                   nil)))))))))
 
 ;;;###autoload
-(defun org-transclusion-blocks-add-all (&optional scope)
-  "Fetch and insert content for all blocks in SCOPE.
+(defun org-transclusion-blocks-remove (&optional keep-properties)
+  "Remove transcluded content from block at point.
 
-SCOPE can be:
-  nil or \\='buffer - entire buffer (default)
-  \\='subtree       - current subtree
-  \\='region        - active region
+Delete content between block delimiters while preserving block
+structure (#+HEADER lines, #+begin/#+end delimiters).
 
-Processes all supported block types with transclusion headers.
+When KEEP-PROPERTIES is non-nil (prefix argument), preserve
+transclusion metadata properties on block for re-transclusion
+via `org-transclusion-blocks-add'.  Otherwise, remove all
+transclusion-related text properties and overlays.
 
-Returns list of successfully processed block positions."
-  (interactive)
-  (let ((scope (or scope 'buffer))
-        (success-count 0)
-        (failure-count 0)
-        (processed-positions nil))
+Point must be on or within a supported block type.
 
-    (save-excursion
-      (save-restriction
-        (pcase scope
-          ('buffer (widen))
-          ('subtree (org-narrow-to-subtree))
-          ('region (when (use-region-p)
-                     (narrow-to-region (region-beginning) (region-end)))))
+Return t if content was removed, nil if block had no transclusion
+metadata.
 
-        (org-element-map (org-element-parse-buffer)
-            '(src-block quote-block example-block export-block special-block
-              verse-block center-block comment-block)
-          (lambda (element)
-            (when (or (org-transclusion-blocks--has-typed-components-p element)
-                      (let ((raw-headers (org-element-property :header element)))
-                        (seq-some (lambda (h) (string-match-p ":transclude" h))
-                                  raw-headers)))
-              (goto-char (org-element-property :begin element))
-              (condition-case err
-                  (when (org-transclusion-blocks-add)
-                    (push (point) processed-positions)
-                    (cl-incf success-count))
-                (error
-                 (cl-incf failure-count)
-                 (message "Error at block line %d: %s"
-                          (line-number-at-pos)
-                          (error-message-string err)))))))))
+Uses `org-transclusion-blocks-transcluded-p' to check metadata.
+Uses `org-transclusion-blocks--get-content-bounds' to locate content.
 
-    (message "Processed %d block%s (%d succeeded, %d failed)"
-             (+ success-count failure-count)
-             (if (= (+ success-count failure-count) 1) "" "s")
-             success-count
-             failure-count)
+Inverse of `org-transclusion-blocks-add'."
+  (interactive "P")
+  (let* ((element (org-element-at-point))
+         (type (org-element-type element)))
 
-    (nreverse processed-positions)))
+    (unless (org-transclusion-blocks--supported-block-p element)
+      (user-error "Not on a supported block (point on: %s)" type))
+
+    (unless (org-transclusion-blocks-transcluded-p)
+      (message "Block has no transclusion metadata")
+      (cl-return-from org-transclusion-blocks-remove nil))
+
+    (let* ((block-beg (org-element-property :begin element))
+           (block-end (org-element-property :end element))
+           (bounds (org-transclusion-blocks--get-content-bounds element))
+           (content-beg (car bounds))
+           (content-end (cdr bounds)))
+
+      ;; Delete content
+      (delete-region content-beg content-end)
+
+      ;; Remove properties and overlays unless preservation requested
+      (unless keep-properties
+        (remove-text-properties
+         block-beg block-end
+         '(org-transclusion-blocks-keyword nil
+           org-transclusion-blocks-link nil
+           org-transclusion-blocks-max-line nil
+           org-transclusion-blocks-fetched nil
+           org-transclusion-id nil
+           org-transclusion-type nil
+           org-transclusion-pair nil))
+
+        (dolist (ov (overlays-in block-beg block-end))
+          (when (overlay-get ov 'org-transclusion-blocks-overlay)
+            (delete-overlay ov))))
+
+      (message "Removed transcluded content from %s block" type)
+      t)))
 
 ;;;###autoload
 (defun org-transclusion-blocks-validate-current-block ()
@@ -1780,7 +1798,6 @@ Useful for testing validator configurations during development."
             (message "Validation passed for %s block" type))
         (error
          (message "Validation failed: %s" (error-message-string err)))))))
-
 
 (defun org-transclusion-blocks--ensure-yank-exclusions ()
   "Add transclusion properties to `yank-excluded-properties' if missing.
