@@ -132,18 +132,24 @@ the existing :path and :search-option values."
 Call the :follow function registered in `org-link-parameters' for TYPE,
 capture the resulting buffer, and return its variable `buffer-file-name'.
 
-Return nil if:
-- No :follow function registered for TYPE
-- :follow function errors
-- Resulting buffer has no file association
+Return nil if no :follow function is registered, resolution errors,
+or the resulting buffer has no file association.
+
+Try calling with two arguments (PATH ARG) first, falling back to
+one argument (PATH) for :follow functions that do not accept an
+optional prefix argument.
 
 Uses `save-window-excursion' to contain side effects of :follow.
+
 Called by `org-transclusion-blocks--add-by-generic-follow'."
   (when-let* ((follow-fn (org-link-get-parameter type :follow)))
     (condition-case nil
         (save-window-excursion
           (save-excursion
-            (funcall follow-fn path nil)
+            (condition-case nil
+                (funcall follow-fn path nil)
+              (wrong-number-of-arguments
+               (funcall follow-fn path)))
             buffer-file-name))
       (error nil))))
 
