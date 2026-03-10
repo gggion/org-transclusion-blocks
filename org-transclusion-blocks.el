@@ -184,6 +184,13 @@ Does not affect non-Org sources (Python files, text files, etc.)."
   :package-version '(org-transclusion-blocks . "0.2.0"))
 
 
+;;;; Internal Variables
+
+(defvar org-transclusion-blocks--link-handlers nil
+  "Defined in `org-transclusion-blocks-link-handlers'.
+Declared here to suppress byte-compiler warnings in
+`org-transclusion-blocks--source-is-org-p'.")
+
 ;;;; Variable Expansion Support
 ;;
 ;; Variable expansion is controlled via component metadata in type registry.
@@ -533,21 +540,44 @@ Detects:
 - id: links (always Org)
 - Custom ID links (always Org)
 - Org headline links
+- Links resolvable via registered link handlers to .org files
 
-Used by `org-transclusion-blocks--should-escape-p'."
+Used by `org-transclusion-blocks--should-escape-p'.
+Uses `org-transclusion-blocks--link-handlers' to resolve
+non-standard link types to file paths when available."
   (when (stringp link-string)
     (or
      ;; file:path.org or file:path.org::search
      (string-match-p (rx "[[file:" (* any) ".org" (or "::" "]]")) link-string)
 
-     ;; id: links
+     ;; id: links (Org files store IDs)
      (string-match-p (rx "[[id:") link-string)
 
      ;; Custom ID links
      (string-match-p (rx "[[#") link-string)
 
-     ;; Headline search in any file (heuristic)
-     (string-match-p (rx "::" (* space) "*") link-string))))
+     ;; Headline search in any file
+     (string-match-p (rx "::" (* space) "*") link-string)
+
+     ;; Resolve via link handler registry
+     (when (and (bound-and-true-p org-transclusion-blocks--link-handlers)
+                (string-match "\\[\\[\\([^:]+\\):\\([^]]+\\)\\]" link-string))
+       (let* ((type (match-string 1 link-string))
+              (path (match-string 2 link-string))
+              ;; Strip search option from path for resolution
+              (clean-path (if (string-match "\\`\\(.*?\\)::" path)
+                              (match-string 1 path)
+                            path))
+              (resolver (alist-get type
+                                   org-transclusion-blocks--link-handlers
+                                   nil nil #'string=)))
+         (when resolver
+           (condition-case nil
+               (let ((file-path (funcall resolver clean-path)))
+                 (and file-path
+                      (stringp file-path)
+                      (string-suffix-p ".org" file-path)))
+             (error nil))))))))
 
 (defun org-transclusion-blocks--should-escape-p (keyword-plist params)
   "Determine if content should be escaped.
