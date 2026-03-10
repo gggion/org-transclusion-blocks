@@ -196,6 +196,14 @@ Declared here to suppress byte-compiler warnings in
 Declared here to suppress byte-compiler warnings in
 `org-transclusion-blocks--source-is-org-p'.")
 
+(defvar org-transclusion-blocks--inhibit-buffer-cleanup nil
+  "When non-nil, skip killing buffers opened during transclusion.
+
+Bound to t by the lines transient menu to avoid repeatedly opening
+and killing source buffers during interactive range adjustment.
+
+Do not set globally.")
+
 ;;;; Variable Expansion Support
 ;;
 ;; Variable expansion is controlled via component metadata in type registry.
@@ -1324,6 +1332,11 @@ Returns content string or nil.
 
 Delegates to `org-transclusion-add-functions' hook.
 
+Kills the source buffer opened during fetch if it was not already
+visiting a file before the call.  Preserves pre-existing buffers.
+Skips cleanup when `org-transclusion-blocks--inhibit-buffer-cleanup'
+is non-nil.
+
 Called by `org-transclusion-blocks-add'."
   (when-let* ((link-string (plist-get keyword-plist :link))
               (link (org-transclusion-wrap-path-to-link link-string)))
@@ -1332,7 +1345,17 @@ Called by `org-transclusion-blocks-add'."
                             'org-transclusion-add-functions
                             link
                             keyword-plist)))
-        (plist-get payload :src-content)))))
+        (let ((content (plist-get payload :src-content))
+              (src-buf (plist-get payload :src-buf)))
+          ;; Kill source buffer if it was opened by the fetch
+          (when (and src-buf
+                     (not org-transclusion-blocks--inhibit-buffer-cleanup)
+                     (buffer-live-p src-buf)
+                     (not (buffer-modified-p src-buf))
+                     (not (plist-get keyword-plist :src-buf-pre-existing)))
+            (let ((kill-buffer-query-functions nil))
+              (kill-buffer src-buf)))
+          content)))))
 
 ;;;; Content Insertion
 

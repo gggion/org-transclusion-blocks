@@ -56,6 +56,10 @@ Used when no prefix argument provided to transient suffixes."
   :type 'integer
   :group 'org-transclusion-blocks-lines)
 
+;;;; Internal Variables
+
+(defvar org-transclusion-blocks--inhibit-buffer-cleanup nil)
+
 ;;;; Range Validation
 
 (defun org-transclusion-blocks-lines--at-upper-boundary-p ()
@@ -391,9 +395,10 @@ Errors if end would go below start."
 (defun org-transclusion-blocks--lines-menu-cleanup ()
   "Cleanup function for lines menu transient exit.
 
-Removes itself from hook.
+Re-enable buffer cleanup and remove itself from hook.
 
 Called after transient exits."
+  (setq org-transclusion-blocks--inhibit-buffer-cleanup nil)
   (remove-hook 'transient-exit-hook
                #'org-transclusion-blocks--lines-menu-cleanup
                t))
@@ -405,8 +410,12 @@ Called after transient exits."
   "Adjust line range for transclusion at point.
 
 All commands accept prefix argument for custom increment.
-Default increment is `org-transclusion-blocks-lines-default-increment'."
+Default increment is `org-transclusion-blocks-lines-default-increment'.
+
+Inhibits buffer cleanup during transient to avoid opening and
+killing source buffers on each range adjustment."
   (interactive)
+  (setq org-transclusion-blocks--inhibit-buffer-cleanup t)
   (add-hook 'transient-exit-hook
             #'org-transclusion-blocks--lines-menu-cleanup
             nil t)
