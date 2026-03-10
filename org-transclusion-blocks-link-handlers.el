@@ -277,15 +277,21 @@ Installed at depth -10 in `org-transclusion-add-functions'."
   "Install link handler functions into `org-transclusion-add-functions'.
 
 Prepend `org-transclusion-blocks--add-org-id-with-search' at depth -10
-before the upstream id: handler to fix :: search option splitting.
+before all other handlers to fix id: :: search option splitting.
 
-Append `org-transclusion-blocks--add-by-link-handler' at depth 80
-for explicit resolver registry (takes precedence over generic).
+Install `org-transclusion-blocks--add-by-link-handler' at depth -5
+for explicit resolver registry.
 
-Append `org-transclusion-blocks--add-by-generic-follow' at depth 90
-as fallback for `org-transclusion-blocks-generic-link-types'.
+Install `org-transclusion-blocks--add-by-generic-follow' at depth -4
+for defcustom-based follow resolution.
 
-Idempotent; safe to call multiple times."
+Both resolver handlers must precede `org-transclusion-add-src-lines'
+\(depth 0), which does not check link type and would attempt to open
+non-file paths directly via `find-file-noselect' when :lines is in
+the plist.
+
+Dedicated third-party handlers at depth 0 handle file: links
+produced by re-dispatch.  Idempotent; safe to call multiple times."
   (unless (memq 'org-transclusion-blocks--add-org-id-with-search
                 org-transclusion-add-functions)
     (add-hook 'org-transclusion-add-functions
@@ -295,12 +301,12 @@ Idempotent; safe to call multiple times."
                 org-transclusion-add-functions)
     (add-hook 'org-transclusion-add-functions
               #'org-transclusion-blocks--add-by-link-handler
-              80))
+              -5))
   (unless (memq 'org-transclusion-blocks--add-by-generic-follow
                 org-transclusion-add-functions)
     (add-hook 'org-transclusion-add-functions
               #'org-transclusion-blocks--add-by-generic-follow
-              90)))
+              -4)))
 
 ;; Install on load
 (org-transclusion-blocks--install-link-handlers)
