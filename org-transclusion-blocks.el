@@ -186,15 +186,8 @@ Does not affect non-Org sources (Python files, text files, etc.)."
 
 ;;;; Internal Variables
 
-(defvar org-transclusion-blocks--link-handlers nil
-  "Defined in `org-transclusion-blocks-link-handlers'.
-Declared here to suppress byte-compiler warnings in
-`org-transclusion-blocks--source-is-org-p'.")
-
-(defvar org-transclusion-blocks-generic-link-types nil
-  "Defined in `org-transclusion-blocks-link-handlers'.
-Declared here to suppress byte-compiler warnings in
-`org-transclusion-blocks--source-is-org-p'.")
+(defvar org-transclusion-blocks--link-handlers)
+(defvar org-transclusion-blocks-generic-link-types)
 
 (defvar org-transclusion-blocks--inhibit-buffer-cleanup nil
   "When non-nil, skip killing buffers opened during transclusion.

@@ -58,7 +58,7 @@ Used when no prefix argument provided to transient suffixes."
 
 ;;;; Internal Variables
 
-(defvar org-transclusion-blocks--inhibit-buffer-cleanup nil)
+(defvar org-transclusion-blocks--inhibit-buffer-cleanup)
 
 ;;;; Range Validation
 
