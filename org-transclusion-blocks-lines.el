@@ -2,7 +2,7 @@
 
 ;; Author: Gino Cornejo
 ;; Maintainer: Gino Cornejo <gggion123@gmail.com>
-;; Homepage: https://github.com/gggion/org-transclusion-blocks
+;; URL: https://github.com/gggion/org-transclusion-blocks
 
 ;; This file is part of org-transclusion-blocks.
 
