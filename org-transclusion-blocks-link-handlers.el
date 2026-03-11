@@ -188,34 +188,47 @@ Called by `org-transclusion-blocks--add-by-follow' and
                   result-buf))))
         (error nil)))))
 
-(defun org-transclusion-blocks--extract-lines-from-buffer (buf plist)
+(defun org-transclusion-blocks--extract-lines-from-buffer (buf plist &optional search)
   "Extract content from BUF according to PLIST specifications.
 
 BUF is a buffer (possibly generated, not file-backed).
-PLIST is the keyword plist containing :lines and :thing-at-point.
+PLIST is the keyword plist containing :lines.
+SEARCH is optional string to locate extraction origin.
 
-Apply :lines extraction when present.  :thing-at-point is not
-supported for generated buffers because the point position after
-:follow is not meaningful for semantic unit extraction.
+When SEARCH is non-nil, find the first occurrence in BUF and use
+the beginning of that line as the origin for :lines extraction.
+All line numbers become relative to this origin.  When SEARCH is
+nil or not found, use `point-min' as origin.
+
+:thing-at-point is not supported for generated buffers because the
+point position after :follow is not meaningful for semantic unit
+extraction.
 
 Return payload plist with :src-content, :src-buf, :src-beg,
 :src-end, compatible with `org-transclusion-add-functions' protocol.
 
 Called by `org-transclusion-blocks--add-by-follow'."
   (with-current-buffer buf
-    (let* ((lines-spec (plist-get plist :lines))
+    (let* ((origin (if search
+                       (save-excursion
+                         (goto-char (point-min))
+                         (if (search-forward search nil t)
+                             (line-beginning-position)
+                           (point-min)))
+                     (point-min)))
+           (lines-spec (plist-get plist :lines))
            (range (when lines-spec (split-string lines-spec "-")))
            (lbeg (if range (string-to-number (car range)) 0))
            (lend (if range (string-to-number (cadr range)) 0))
            (beg (if (> lbeg 0)
                     (save-excursion
-                      (goto-char (point-min))
+                      (goto-char origin)
                       (forward-line (1- lbeg))
                       (point))
-                  (point-min)))
+                  origin))
            (end (if (> lend 0)
                     (save-excursion
-                      (goto-char (point-min))
+                      (goto-char origin)
                       (forward-line (1- lend))
                       (end-of-line)
                       (min (1+ (point)) (point-max)))
@@ -250,7 +263,9 @@ Installed at depth -4 in `org-transclusion-add-functions'."
   ;; 2. Call :follow via `org-transclusion-blocks--invoke-follow'
   ;; 3. Inspect `buffer-file-name' on resulting buffer:
   ;;    - Non-nil: re-dispatch via `org-transclusion-blocks--redispatch-as-file'
+  ;;      (SEARCH appended as :: in re-dispatched file: link)
   ;;    - Nil: capture via `org-transclusion-blocks--extract-lines-from-buffer'
+  ;;      (SEARCH passed to shift extraction origin)
   (let ((type (org-element-property :type link)))
     (when (member type org-transclusion-blocks-follow-types)
       (pcase-let ((`(,path . ,search)
@@ -272,7 +287,7 @@ Installed at depth -4 in `org-transclusion-add-functions'."
            ;; Generated buffer: capture content directly
            (t
             (org-transclusion-blocks--extract-lines-from-buffer
-             result-buf plist))))))))
+             result-buf plist search))))))))
 
 ;;;; Explicit Resolver Dispatch
 
