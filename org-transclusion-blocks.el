@@ -187,7 +187,7 @@ Does not affect non-Org sources (Python files, text files, etc.)."
 ;;;; Internal Variables
 
 (defvar org-transclusion-blocks--link-handlers)
-(defvar org-transclusion-blocks-generic-link-types)
+(defvar org-transclusion-blocks-follow-types)
 
 (defvar org-transclusion-blocks--inhibit-buffer-cleanup nil
   "When non-nil, skip killing buffers opened during transclusion.
@@ -541,17 +541,22 @@ Examples:
 
 LINK-STRING is complete link including [[ ]] brackets.
 
-Detects:
+Detect Org sources by:
 - file: links with .org extension
 - id: links (always Org)
 - Custom ID links (always Org)
-- Org headline links
+- Headline search in any file
 - Links resolvable via explicit handler registry to .org files
-- Links resolvable via generic follow to .org files
+- Links resolvable via `org-transclusion-blocks--invoke-follow'
+  to file buffers with .org extension
+
+When `org-transclusion-blocks--invoke-follow' produces a generated
+buffer (no variable `buffer-file-name'), kill it immediately to prevent
+buffer leaks from the detection check.
 
 Uses `org-transclusion-blocks--link-handlers' for explicit resolvers
-and `org-transclusion-blocks--resolve-link-via-follow' for types in
-`org-transclusion-blocks-generic-link-types'."
+and `org-transclusion-blocks--invoke-follow' for types in
+`org-transclusion-blocks-follow-types'."
   (when (stringp link-string)
     (or
      ;; file:path.org or file:path.org::search
@@ -566,7 +571,7 @@ and `org-transclusion-blocks--resolve-link-via-follow' for types in
      ;; Headline search in any file
      (string-match-p (rx "::" (* space) "*") link-string)
 
-     ;; Resolve via explicit registry or generic follow
+     ;; Resolve via explicit registry or follow invocation
      (when (string-match "\\[\\[\\([^:]+\\):\\([^]]+\\)\\]" link-string)
        (let* ((type (match-string 1 link-string))
               (path (match-string 2 link-string))
@@ -586,16 +591,22 @@ and `org-transclusion-blocks--resolve-link-via-follow' for types in
                         (funcall resolver clean-path)
                       (error nil))))
 
-                ;; Generic follow for types in defcustom
+                ;; Follow invocation for types in defcustom
                 (when (and (bound-and-true-p
-                            org-transclusion-blocks-generic-link-types)
+                            org-transclusion-blocks-follow-types)
                            (member type
-                                   org-transclusion-blocks-generic-link-types)
+                                   org-transclusion-blocks-follow-types)
                            (fboundp
-                            'org-transclusion-blocks--resolve-link-via-follow))
+                            'org-transclusion-blocks--invoke-follow))
                   (condition-case nil
-                      (org-transclusion-blocks--resolve-link-via-follow
-                       type clean-path)
+                      (when-let* ((buf (org-transclusion-blocks--invoke-follow
+                                        type clean-path)))
+                        (if (buffer-file-name buf)
+                            (buffer-file-name buf)
+                          ;; Generated buffer: not Org, kill to prevent leak
+                          (let ((kill-buffer-query-functions nil))
+                            (kill-buffer buf))
+                          nil))
                     (error nil))))))
          (and file-path
               (stringp file-path)
@@ -1319,36 +1330,50 @@ Called by `org-transclusion-blocks-add'."
 (defun org-transclusion-blocks--fetch-content (keyword-plist)
   "Fetch transcluded content using KEYWORD-PLIST.
 
-KEYWORD-PLIST is org-transclusion keyword plist.
+KEYWORD-PLIST is org-transclusion keyword plist with :link property.
 
 Returns content string or nil.
 
 Delegates to `org-transclusion-add-functions' hook.
 
-Kills the source buffer opened during fetch if it was not already
-visiting a file before the call.  Preserves pre-existing buffers.
-Skips cleanup when `org-transclusion-blocks--inhibit-buffer-cleanup'
+Kills source buffers not present before the hook call.  Skips
+cleanup when `org-transclusion-blocks--inhibit-buffer-cleanup'
 is non-nil.
 
 Called by `org-transclusion-blocks-add'."
+  ;; Uses `copy-sequence' on `buffer-list' snapshot and `memq' with
+  ;; `eq' identity comparison on buffer objects.
+  ;;
+  ;; Handles both file-visiting and generated buffers.  A buffer is
+  ;; killed if all conditions hold:
+  ;; 1. It was not in `buffer-list' before the hook call
+  ;; 2. It is still live
+  ;; 3. It is not modified
+  ;;
+  ;; This covers file-visiting buffers opened by `find-file-noselect'
+  ;; and generated buffers created by :follow functions.  Pre-existing
+  ;; buffers (including reused generated buffers like *Help*) are
+  ;; preserved because `memq' finds them in the snapshot.
   (when-let* ((link-string (plist-get keyword-plist :link))
               (link (org-transclusion-wrap-path-to-link link-string)))
-    (save-window-excursion
-      (when-let* ((payload (run-hook-with-args-until-success
-                            'org-transclusion-add-functions
-                            link
-                            keyword-plist)))
-        (let ((content (plist-get payload :src-content))
-              (src-buf (plist-get payload :src-buf)))
-          ;; Kill source buffer if it was opened by the fetch
-          (when (and src-buf
-                     (not org-transclusion-blocks--inhibit-buffer-cleanup)
-                     (buffer-live-p src-buf)
-                     (not (buffer-modified-p src-buf))
-                     (not (plist-get keyword-plist :src-buf-pre-existing)))
-            (let ((kill-buffer-query-functions nil))
-              (kill-buffer src-buf)))
-          content)))))
+    (let ((pre-existing (unless org-transclusion-blocks--inhibit-buffer-cleanup
+                          (copy-sequence (buffer-list)))))
+      (save-window-excursion
+        (when-let* ((payload (run-hook-with-args-until-success
+                              'org-transclusion-add-functions
+                              link
+                              keyword-plist)))
+          (let ((content (plist-get payload :src-content))
+                (src-buf (plist-get payload :src-buf)))
+            ;; Kill source buffer if opened by the fetch
+            (when (and pre-existing
+                       src-buf
+                       (buffer-live-p src-buf)
+                       (not (memq src-buf pre-existing))
+                       (not (buffer-modified-p src-buf)))
+              (let ((kill-buffer-query-functions nil))
+                (kill-buffer src-buf)))
+            content))))))
 
 ;;;; Content Insertion
 

@@ -415,7 +415,7 @@ Default increment is `org-transclusion-blocks-lines-default-increment'.
 Inhibits buffer cleanup during transient to avoid opening and
 killing source buffers on each range adjustment."
   (interactive)
-  (setq org-transclusion-blocks--inhibit-buffer-cleanup t)
+  (setq org-transclusion-blocks--inhibit-buffer-cleanup nil)
   (add-hook 'transient-exit-hook
             #'org-transclusion-blocks--lines-menu-cleanup
             nil t)
