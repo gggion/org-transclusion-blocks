@@ -86,11 +86,13 @@
 
 ;;; Code:
 
-(require 'org-transclusion)
 (require 'org-element)
 (require 'ol)
 (require 'org-macs)
 (require 'cl-lib)
+
+(declare-function org-transclusion-keyword-string-to-plist "org-transclusion")
+(declare-function org-transclusion-wrap-path-to-link "org-transclusion")
 
 ;;;; Type Registry State
 

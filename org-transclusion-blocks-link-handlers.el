@@ -61,8 +61,13 @@
 ;; - `org-transclusion-blocks-follow-types' - Defcustom for types
 
 ;;; Code:
+(require 'org-element)
+(require 'ol)
 
-(require 'org-transclusion)
+(declare-function org-transclusion-wrap-path-to-link "org-transclusion")
+(declare-function org-transclusion-keyword-string-to-plist "org-transclusion")
+(declare-function org-transclusion--bounds-of-n-things-at-point "org-transclusion")
+(defvar org-transclusion-add-functions)
 
 ;;;; Customization
 

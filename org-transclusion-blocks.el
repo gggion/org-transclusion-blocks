@@ -110,6 +110,7 @@
 ;; - `org-transclusion-blocks-validate-current-block' - Test validators
 ;; - `org-transclusion-blocks-describe-type' - Show type documentation
 ;; - `org-transclusion-blocks-list-types' - List registered types
+
 ;;; Code:
 
 (require 'org-transclusion)
@@ -118,6 +119,8 @@
 (require 'ol)
 (require 'cl-lib)
 (require 'org-transclusion-blocks-types)
+(require 'org-transclusion-blocks-headers)
+(require 'org-transclusion-blocks-link-handlers)
 
 ;;;; Customization
 
