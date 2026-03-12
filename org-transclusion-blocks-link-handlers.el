@@ -192,17 +192,21 @@ Called by `org-transclusion-blocks--add-by-follow' and
   "Extract content from BUF according to PLIST specifications.
 
 BUF is a buffer (possibly generated, not file-backed).
-PLIST is the keyword plist containing :lines.
+PLIST is the keyword plist containing :lines and :thing-at-point.
 SEARCH is optional string to locate extraction origin.
 
 When SEARCH is non-nil, find the first occurrence in BUF and use
-the beginning of that line as the origin for :lines extraction.
-All line numbers become relative to this origin.  When SEARCH is
-nil or not found, use `point-min' as origin.
+the beginning of that line as the origin for :lines and
+:thing-at-point extraction.
 
-:thing-at-point is not supported for generated buffers because the
-point position after :follow is not meaningful for semantic unit
-extraction.
+When :thing-at-point is in PLIST, call `bounds-of-thing-at-point'
+at the origin (or at the first non-whitespace character on the
+origin line) to determine extraction bounds.  The :end plist value
+controls repeat count for consecutive things.
+
+When :lines is in PLIST, extract line range relative to origin.
+
+:thing-at-point takes precedence over :lines when both present.
 
 Return payload plist with :src-content, :src-buf, :src-beg,
 :src-end, compatible with `org-transclusion-add-functions' protocol.
@@ -216,23 +220,43 @@ Called by `org-transclusion-blocks--add-by-follow'."
                              (line-beginning-position)
                            (point-min)))
                      (point-min)))
+           (thing-spec (plist-get plist :thing-at-point))
+           (thing (when thing-spec
+                    (intern (cadr (split-string thing-spec)))))
+           (end-spec (plist-get plist :end))
+           (count (if (and end-spec thing)
+                      (string-to-number
+                       (org-strip-quotes end-spec))
+                    1))
+           (thing-bounds
+            (when thing
+              (save-excursion
+                (goto-char origin)
+                (back-to-indentation)
+                (org-transclusion--bounds-of-n-things-at-point
+                 thing count))))
            (lines-spec (plist-get plist :lines))
            (range (when lines-spec (split-string lines-spec "-")))
            (lbeg (if range (string-to-number (car range)) 0))
            (lend (if range (string-to-number (cadr range)) 0))
-           (beg (if (> lbeg 0)
-                    (save-excursion
-                      (goto-char origin)
-                      (forward-line (1- lbeg))
-                      (point))
-                  origin))
-           (end (if (> lend 0)
-                    (save-excursion
-                      (goto-char origin)
-                      (forward-line (1- lend))
-                      (end-of-line)
-                      (min (1+ (point)) (point-max)))
-                  (point-max)))
+           ;; thing-at-point takes precedence over :lines
+           (beg (cond
+                 (thing-bounds (car thing-bounds))
+                 ((> lbeg 0)
+                  (save-excursion
+                    (goto-char origin)
+                    (forward-line (1- lbeg))
+                    (point)))
+                 (t origin)))
+           (end (cond
+                 (thing-bounds (cdr thing-bounds))
+                 ((> lend 0)
+                  (save-excursion
+                    (goto-char origin)
+                    (forward-line (1- lend))
+                    (end-of-line)
+                    (min (1+ (point)) (point-max))))
+                 (t (point-max))))
            (content (buffer-substring-no-properties beg end)))
       (list :src-content content
             :src-buf buf
