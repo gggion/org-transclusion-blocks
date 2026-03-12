@@ -42,6 +42,7 @@
 (require 'org-transclusion-blocks-headers)
 (require 'transient)
 
+(defvar org-transclusion-blocks--inhibit-buffer-cleanup)
 ;;;; Customization
 
 (defgroup org-transclusion-blocks-lines nil
@@ -58,7 +59,16 @@ Used when no prefix argument provided to transient suffixes."
 
 ;;;; Internal Variables
 
-(defvar org-transclusion-blocks--inhibit-buffer-cleanup)
+(defvar-local org-transclusion-blocks--undo-handle nil
+  "Change group handle for lines menu undo consolidation.
+
+Set by `org-transclusion-blocks-lines-menu' before entering transient.
+Consumed by `org-transclusion-blocks--lines-menu-cleanup' on exit.
+
+All header modifications and content re-fetches during interactive
+line range adjustment are amalgamated into a single undo step.
+
+Do not set globally.")
 
 ;;;; Range Validation
 
@@ -395,13 +405,21 @@ Errors if end would go below start."
 (defun org-transclusion-blocks--lines-menu-cleanup ()
   "Cleanup function for lines menu transient exit.
 
-Re-enable buffer cleanup and remove itself from hook.
+Consolidate undo history and re-enable buffer cleanup.
+
+All changes made during interactive adjustment are amalgamated
+into a single undo step via the change group protocol.
 
 Called after transient exits."
-  (setq org-transclusion-blocks--inhibit-buffer-cleanup nil)
-  (remove-hook 'transient-exit-hook
-               #'org-transclusion-blocks--lines-menu-cleanup
-               t))
+  (unwind-protect
+      (when org-transclusion-blocks--undo-handle
+        (accept-change-group org-transclusion-blocks--undo-handle)
+        (undo-amalgamate-change-group org-transclusion-blocks--undo-handle)
+        (setq org-transclusion-blocks--undo-handle nil))
+    (setq org-transclusion-blocks--inhibit-buffer-cleanup nil)
+    (remove-hook 'transient-exit-hook
+                 #'org-transclusion-blocks--lines-menu-cleanup
+                 t)))
 
 ;;;; Transient Menu
 
@@ -413,8 +431,14 @@ All commands accept prefix argument for custom increment.
 Default increment is `org-transclusion-blocks-lines-default-increment'.
 
 Inhibits buffer cleanup during transient to avoid opening and
-killing source buffers on each range adjustment."
+killing source buffers on each range adjustment.
+
+All changes made during menu interaction are amalgamated into
+a single undo step using the change group protocol."
   (interactive)
+  (let ((handle (prepare-change-group)))
+    (setq org-transclusion-blocks--undo-handle handle)
+    (activate-change-group handle))
   (setq org-transclusion-blocks--inhibit-buffer-cleanup nil)
   (add-hook 'transient-exit-hook
             #'org-transclusion-blocks--lines-menu-cleanup
@@ -459,3 +483,5 @@ Do not call directly; use `org-transclusion-blocks-lines-menu'."
     ("q" "Quit" transient-quit-one)]])
 
 (provide 'org-transclusion-blocks-lines)
+
+;;; org-transclusion-blocks-lines.el ends here
