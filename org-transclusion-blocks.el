@@ -162,32 +162,32 @@ Warnings appear in *Warnings* buffer and echo area."
   :group 'org-transclusion-blocks
   :package-version '(org-transclusion-blocks . "0.2.0"))
 
-(defcustom org-transclusion-blocks-escape-org-sources t
-  "Whether to escape Org syntax when transcluding from Org files.
+(defcustom org-transclusion-blocks-no-escape-block-types nil
+  "Block types where Org syntax escaping is skipped.
 
-When non-nil (recommended), automatically escapes content transcluded
-from links targeting Org files (file: links with .org extension,
-id: links, etc.).
+List of block type strings (lowercase, without \"#+begin_\" prefix).
+For example, (\"example\" \"export\") skips escaping for
+example and export blocks.
 
-This prevents Org markup in source content from breaking src block
-structure:
-  - Headlines (*, **, etc.)
-  - Keywords (#+BEGIN, #+PROPERTY, etc.)
-  - Markup characters that start lines
+By default this is nil, meaning all block types have their content
+escaped via `org-escape-code-in-region'.  This prevents transcluded
+content from breaking block structure regardless of source format.
 
-When nil, content is inserted verbatim.  Use :transclude-escape-org
-header to override per-block.
+The :transclude-escape-org header overrides this setting per-block:
+  - Non-nil value forces escaping on
+  - Value of \"nil\", \"no\", \"false\", or \"0\" forces escaping off
 
-Does not affect non-Org sources (Python files, text files, etc.)."
-  :type 'boolean
+Escaping prepends commas to lines starting with *, #+, or , at the
+left margin.  For content without conflicting sequences, escaping
+is a no-op.
+
+Used by `org-transclusion-blocks--should-escape-p'."
+  :type '(repeat string)
   :group 'org-transclusion-blocks
-  :package-version '(org-transclusion-blocks . "0.2.0"))
+  :package-version '(org-transclusion-blocks . "0.5.0"))
 
 
 ;;;; Internal Variables
-
-(defvar org-transclusion-blocks--link-handlers)
-(defvar org-transclusion-blocks-follow-types)
 
 (defvar org-transclusion-blocks--inhibit-buffer-cleanup nil
   "When non-nil, skip killing buffers opened during transclusion.
@@ -536,110 +536,46 @@ Examples:
 
 ;;;; Block Type Support
 
-(defun org-transclusion-blocks--source-is-org-p (link-string)
-  "Return non-nil if LINK-STRING targets Org content.
+(defun org-transclusion-blocks--block-type-string (element)
+  "Return lowercase block type string for ELEMENT.
 
-LINK-STRING is complete link including [[ ]] brackets.
+ELEMENT is org-element block context.
 
-Detect Org sources by:
-- file: links with .org extension
-- id: links (always Org)
-- Custom ID links (always Org)
-- Headline search in any file
-- Links resolvable via explicit handler registry to .org files
-- Links resolvable via `org-transclusion-blocks--invoke-follow'
-  to file buffers with .org extension
+Return string like \"src\", \"quote\", \"example\", or nil if
+ELEMENT is not a block.
 
-When `org-transclusion-blocks--invoke-follow' produces a generated
-buffer (no variable `buffer-file-name'), kill it immediately to prevent
-buffer leaks from the detection check.
+Used by `org-transclusion-blocks--should-escape-p'."
+  (when-let* ((type (org-element-type element)))
+    (let ((name (symbol-name type)))
+      (when (string-suffix-p "-block" name)
+        (substring name 0 (- (length name) 6))))))
 
-Uses `org-transclusion-blocks--link-handlers' for explicit resolvers
-and `org-transclusion-blocks--invoke-follow' for types in
-`org-transclusion-blocks-follow-types'."
-  (when (stringp link-string)
-    (or
-     ;; file:path.org or file:path.org::search
-     (string-match-p (rx "[[file:" (* any) ".org" (or "::" "]]")) link-string)
+(defun org-transclusion-blocks--should-escape-p (element params)
+  "Determine if content should be escaped for ELEMENT.
 
-     ;; id: links (Org files store IDs)
-     (string-match-p (rx "[[id:") link-string)
-
-     ;; Custom ID links
-     (string-match-p (rx "[[#") link-string)
-
-     ;; Headline search in any file
-     (string-match-p (rx "::" (* space) "*") link-string)
-
-     ;; Resolve via explicit registry or follow invocation
-     (when (string-match "\\[\\[\\([^:]+\\):\\([^]]+\\)\\]" link-string)
-       (let* ((type (match-string 1 link-string))
-              (path (match-string 2 link-string))
-              ;; Strip search option from path for resolution
-              (clean-path (if (string-match "\\`\\(.*?\\)::" path)
-                              (match-string 1 path)
-                            path))
-              (file-path
-               (or
-                ;; Explicit resolver
-                (when (bound-and-true-p org-transclusion-blocks--link-handlers)
-                  (when-let* ((resolver
-                               (alist-get type
-                                          org-transclusion-blocks--link-handlers
-                                          nil nil #'string=)))
-                    (condition-case nil
-                        (funcall resolver clean-path)
-                      (error nil))))
-
-                ;; Follow invocation for types in defcustom
-                (when (and (bound-and-true-p
-                            org-transclusion-blocks-follow-types)
-                           (member type
-                                   org-transclusion-blocks-follow-types)
-                           (fboundp
-                            'org-transclusion-blocks--invoke-follow))
-                  (condition-case nil
-                      (when-let* ((buf (org-transclusion-blocks--invoke-follow
-                                        type clean-path)))
-                        (if (buffer-file-name buf)
-                            (buffer-file-name buf)
-                          ;; Generated buffer: not Org, kill to prevent leak
-                          (let ((kill-buffer-query-functions nil))
-                            (kill-buffer buf))
-                          nil))
-                    (error nil))))))
-         (and file-path
-              (stringp file-path)
-              (string-suffix-p ".org" file-path)))))))
-
-(defun org-transclusion-blocks--should-escape-p (keyword-plist params)
-  "Determine if content should be escaped.
-
-KEYWORD-PLIST is org-transclusion keyword plist with :link property.
+ELEMENT is org-element block context.
 PARAMS is alist of header arguments.
 
-Checks in priority order:
-1. Explicit :transclude-escape-org header
-2. Source file type via `org-transclusion-blocks-escape-org-sources'
-3. Default to nil
-
-Returns non-nil if escaping should occur.
+Check in priority order:
+1. Explicit :transclude-escape-org header (overrides everything)
+2. Block type against `org-transclusion-blocks-no-escape-block-types'
+3. Default to t (always escape)
 
 Called by `org-transclusion-blocks-add'."
-  (let ((explicit (assoc-default :transclude-escape-org params))
-        (link-string (plist-get keyword-plist :link)))
+  (let ((explicit (assoc-default :transclude-escape-org params)))
     (cond
      ;; 1. Explicit header overrides everything
      ((and explicit (not (string-empty-p explicit)))
       (not (member explicit '("nil" "no" "false" "0"))))
 
-     ;; 2. Check source type
-     ((and org-transclusion-blocks-escape-org-sources
-           (org-transclusion-blocks--source-is-org-p link-string))
-      t)
+     ;; 2. Check block type exclusion list
+     ((when-let* ((block-type
+                   (org-transclusion-blocks--block-type-string element)))
+        (member block-type org-transclusion-blocks-no-escape-block-types))
+      nil)
 
-     ;; 3. Default: no escaping
-     (t nil))))
+     ;; 3. Default: always escape
+     (t t))))
 
 (defun org-transclusion-blocks--supported-block-p (element)
   "Return non-nil if ELEMENT supports transclusion.
@@ -1596,7 +1532,7 @@ Returns t on success, nil if no headers or fetch failed."
                                 (org-transclusion-blocks--get-thing-spec expanded-params))
                       (setq content (org-transclusion-blocks--strip-trailing-blanks content)))
 
-                    (when (org-transclusion-blocks--should-escape-p keyword-plist expanded-params)
+                    (when (org-transclusion-blocks--should-escape-p element expanded-params)
                       (setq content (org-transclusion-blocks--escape-org-syntax content)))
 
                     (let ((block-start (org-element-property :begin element)))
