@@ -123,10 +123,20 @@ RESOLVER receives link path string, returns absolute file path or nil.
 Check package availability inside RESOLVER via `fboundp'.
 
 Takes precedence over `org-transclusion-blocks-follow-types'.
-Populates `org-transclusion-blocks--link-handlers'."
+Populates `org-transclusion-blocks--link-handlers'.
+
+Installs `org-transclusion-blocks--add-by-link-handler' into
+`org-transclusion-add-functions' on first call.  Subsequent
+registrations reuse the existing hook entry."
   (setf (alist-get type org-transclusion-blocks--link-handlers
                    nil nil #'string=)
-        resolver))
+        resolver)
+  ;; Install handler on first registration
+  (unless (memq 'org-transclusion-blocks--add-by-link-handler
+                org-transclusion-add-functions)
+    (add-hook 'org-transclusion-add-functions
+              #'org-transclusion-blocks--add-by-link-handler
+              -5)))
 
 ;;;; Path Splitting
 
@@ -381,71 +391,23 @@ Called by `org-transclusion-blocks--add-by-follow',
 
 ;;;; id: Links with Search Options
 
-(defun org-transclusion-blocks--add-org-id-with-search (link plist)
-  "Handle id: LINK containing :: search option for PLIST.
-
-LINK is an `org-element' link object.
-PLIST is keyword plist passed unchanged to handlers.
-
-Return nil for id: links without :: to let upstream handle those.
-Return (:src-content nil) on UUID lookup failure to prevent
-fallthrough to upstream `org-transclusion-add-org-id'.
-
-Uses `org-transclusion-blocks--split-path-search' for :: splitting.
-Resolves UUID via `org-id-find'.
-Delegates to `org-transclusion-blocks--redispatch-as-file'.
-
-Installed at depth -10 in `org-transclusion-add-functions'."
-  (when (string= "id" (org-element-property :type link))
-    (pcase-let ((`(,id . ,search)
-                 (org-transclusion-blocks--split-path-search link)))
-      (when search
-        (let ((found (ignore-errors (org-id-find id))))
-          (if (not found)
-              (progn
-                (message
-                 "No transclusion done for ID %s at point %d, line %d"
-                 id (point) (org-current-line))
-                '(:src-content nil))
-            (org-transclusion-blocks--redispatch-as-file
-             (car found) search plist)))))))
-
 ;;;; Installation
 
 (defun org-transclusion-blocks--install-link-handlers ()
   "Install link handler functions into `org-transclusion-add-functions'.
 
-Prepend `org-transclusion-blocks--add-org-id-with-search' at depth -10
-before all other handlers to fix id: :: search option splitting.
-
-Install `org-transclusion-blocks--add-by-link-handler' at depth -5
-for explicit resolver registry.
-
 Install `org-transclusion-blocks--add-by-follow' at depth -4
 for unified follow-based resolution.
 
-Both resolver handlers must precede `org-transclusion-add-src-lines'
-\(depth 0), which does not check link type and would attempt to open
-non-file paths directly via `find-file-noselect' when :lines is in
-the plist.
+The explicit resolver handler (`org-transclusion-blocks--add-by-link-handler')
+is installed lazily by `org-transclusion-blocks-register-link-handler'
+on first resolver registration.
 
-Dedicated third-party handlers at depth 0 handle file: links
-produced by re-dispatch.  Idempotent; safe to call multiple times.
+Idempotent; safe to call multiple times.
 
 Called at load time by the top-level form at end of file."
-  ;; Remove old handler if present (renamed from generic-follow)
   (remove-hook 'org-transclusion-add-functions
                'org-transclusion-blocks--add-by-generic-follow)
-  (unless (memq 'org-transclusion-blocks--add-org-id-with-search
-                org-transclusion-add-functions)
-    (add-hook 'org-transclusion-add-functions
-              #'org-transclusion-blocks--add-org-id-with-search
-              -10))
-  (unless (memq 'org-transclusion-blocks--add-by-link-handler
-                org-transclusion-add-functions)
-    (add-hook 'org-transclusion-add-functions
-              #'org-transclusion-blocks--add-by-link-handler
-              -5))
   (unless (memq 'org-transclusion-blocks--add-by-follow
                 org-transclusion-add-functions)
     (add-hook 'org-transclusion-add-functions
