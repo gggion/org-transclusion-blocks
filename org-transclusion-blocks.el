@@ -1266,6 +1266,50 @@ Called by `org-transclusion-blocks-add'."
 
 ;;;; Content Fetching
 
+(defun org-transclusion-blocks--fetch-content-via-handler (type params keyword-plist)
+  "Attempt to fetch content via TYPE's registered content handler.
+
+TYPE is link type symbol from :transclude-type header.
+PARAMS is expanded header argument alist.
+KEYWORD-PLIST is plist from `org-transclusion-blocks--params-to-plist'.
+
+Extract components via `org-transclusion-blocks--extract-type-components',
+then call the registered content handler with (COMPONENTS KEYWORD-PLIST).
+
+Return content string if handler succeeds, nil otherwise.
+
+Buffer cleanup follows the same snapshot strategy as
+`org-transclusion-blocks--fetch-content': buffers opened by the
+handler that were not present before the call are killed unless
+modified or `org-transclusion-blocks--inhibit-buffer-cleanup' is
+non-nil.
+
+Called by `org-transclusion-blocks-add' before falling back to
+`org-transclusion-blocks--fetch-content'."
+  (when-let* ((handler (alist-get type org-transclusion-blocks--type-content-handlers))
+              (components (org-transclusion-blocks--extract-type-components type params)))
+    (let ((pre-existing (unless org-transclusion-blocks--inhibit-buffer-cleanup
+                          (copy-sequence (buffer-list)))))
+      (save-window-excursion
+        (condition-case err
+            (when-let* ((payload (funcall handler components keyword-plist)))
+              (let ((content (plist-get payload :src-content))
+                    (src-buf (plist-get payload :src-buf)))
+                ;; Buffer cleanup: same strategy as fetch-content
+                (when (and pre-existing
+                           src-buf
+                           (buffer-live-p src-buf)
+                           (not (memq src-buf pre-existing))
+                           (not (buffer-modified-p src-buf)))
+                  (let ((kill-buffer-query-functions nil))
+                    (kill-buffer src-buf)))
+                content))
+          (error
+           (message "org-transclusion-blocks: content handler for %s failed: %s"
+                    type (error-message-string err))
+           nil))))))
+
+
 (defun org-transclusion-blocks--fetch-content (keyword-plist)
   "Fetch transcluded content using KEYWORD-PLIST.
 
@@ -1479,6 +1523,12 @@ Validation occurs in two phases:
 1. Pre-validation (before expansion): :validator-pre checks syntax
 2. Post-validation (after expansion): :validator-post checks semantics
 
+When a type registers a content handler via
+`org-transclusion-blocks-register-type', content is fetched directly
+via the handler instead of dispatching through
+`org-transclusion-add-functions'.  The handler receives extracted
+components and keyword plist, returning a payload plist.
+
 Point must be on or within a supported block type.
 
 For src-blocks, uses Babel for header processing.
@@ -1527,29 +1577,42 @@ Returns t on success, nil if no headers or fetch failed."
                   (message "No transclusion headers found")
                   nil)
 
-              (if-let ((content (org-transclusion-blocks--fetch-content keyword-plist)))
-                  (progn
-                    ;; Strip trailing blanks from :post-blank unless
-                    ;; line-bounded transclusion is active
-                    (unless (or (org-transclusion-blocks--get-lines-spec expanded-params)
-                                (org-transclusion-blocks--get-thing-spec expanded-params))
-                      (setq content (org-transclusion-blocks--strip-trailing-blanks content)))
+              ;; Try content handler first for typed transclusions,
+              ;; fall back to standard hook dispatch
+              (let* ((tc-type-raw (cdr (assq :transclude-type expanded-params)))
+                     (tc-type (when tc-type-raw
+                                (if (symbolp tc-type-raw) tc-type-raw
+                                  (intern (org-strip-quotes
+                                           (if (stringp tc-type-raw) tc-type-raw
+                                             (format "%s" tc-type-raw)))))))
+                     (content (or (when tc-type
+                                    (org-transclusion-blocks--fetch-content-via-handler
+                                     tc-type expanded-params keyword-plist))
+                                  (org-transclusion-blocks--fetch-content keyword-plist))))
 
-                    (when (org-transclusion-blocks--should-escape-p element expanded-params)
-                      (setq content (org-transclusion-blocks--escape-org-syntax content)))
+                (if content
+                    (progn
+                      ;; Strip trailing blanks from :post-blank unless
+                      ;; line-bounded transclusion is active
+                      (unless (or (org-transclusion-blocks--get-lines-spec expanded-params)
+                                  (org-transclusion-blocks--get-thing-spec expanded-params))
+                        (setq content (org-transclusion-blocks--strip-trailing-blanks content)))
 
-                    (let ((block-start (org-element-property :begin element)))
-                      (org-transclusion-blocks--update-content element content)
+                      (when (org-transclusion-blocks--should-escape-p element expanded-params)
+                        (setq content (org-transclusion-blocks--escape-org-syntax content)))
 
-                      ;; Re-parse for indicator positioning
-                      (goto-char block-start)
-                      (setq element (org-element-at-point))
+                      (let ((block-start (org-element-property :begin element)))
+                        (org-transclusion-blocks--update-content element content)
 
-                      (org-transclusion-blocks--show-indicator element)
-                      t))
+                        ;; Re-parse for indicator positioning
+                        (goto-char block-start)
+                        (setq element (org-element-at-point))
 
-                (message "Failed to fetch transclusion content")
-                nil))))))))
+                        (org-transclusion-blocks--show-indicator element)
+                        t))
+
+                  (message "Failed to fetch transclusion content")
+                  nil)))))))))
 
 ;;;###autoload
 (defun org-transclusion-blocks-remove ()
