@@ -2,7 +2,7 @@
 
 ;; Author: Gino Cornejo
 ;; Maintainer: Gino Cornejo <gggion123@gmail.com>
-;; Homepage: https://github.com/gggion/org-transclusion-blocks
+;; URL: https://github.com/gggion/org-transclusion-blocks
 
 ;; This file is part of org-transclusion-blocks.
 
@@ -86,11 +86,13 @@
 
 ;;; Code:
 
-(require 'org-transclusion)
 (require 'org-element)
 (require 'ol)
 (require 'org-macs)
 (require 'cl-lib)
+
+(declare-function org-transclusion-keyword-string-to-plist "org-transclusion")
+(declare-function org-transclusion-wrap-path-to-link "org-transclusion")
 
 ;;;; Type Registry State
 
@@ -121,6 +123,21 @@ returns raw link string (without [[ ]] brackets).
 
 Populated via `org-transclusion-blocks-register-type'.
 Used by `org-transclusion-blocks--construct-link'.")
+
+(defvar org-transclusion-blocks--type-content-handlers nil
+  "Alist mapping link types to content handler functions.
+
+Each entry: (TYPE . CONTENT-HANDLER-FUNC)
+
+CONTENT-HANDLER-FUNC receives (COMPONENTS PLIST) and returns
+payload plist or nil.
+
+When present for a type, `org-transclusion-blocks-add' calls
+the handler directly instead of dispatching through
+`org-transclusion-add-functions'.
+
+Populated via `org-transclusion-blocks-register-type'.
+Queried by `org-transclusion-blocks--fetch-content-via-handler'.")
 
 ;;;; Validator Composition Utilities
 
@@ -313,10 +330,11 @@ Called by `org-transclusion-blocks--pre-validate-headers'."
 
 ;;;; Type Registry API
 
-(defun org-transclusion-blocks-register-type (type component-spec constructor)
-  "Register link TYPE with COMPONENT-SPEC and CONSTRUCTOR.
+(defun org-transclusion-blocks-register-type (type component-spec constructor
+                                              &optional content-handler)
+  "Register link TYPE with COMPONENT-SPEC, CONSTRUCTOR, and CONTENT-HANDLER.
 
-TYPE is symbol naming link type (e.g., \\='my-link).
+TYPE is symbol naming link type (e.g., \\='orgit-file).
 
 COMPONENT-SPEC is plist mapping semantic component names to metadata:
   (:semantic-name (:header :header-keyword
@@ -328,27 +346,52 @@ COMPONENT-SPEC is plist mapping semantic component names to metadata:
 
 CONSTRUCTOR receives plist of validated components,
 returns raw link string (without [[ ]] brackets).
+Required for link construction even when CONTENT-HANDLER is present,
+because link strings appear in #+transclude: lines for keyword
+plist parsing.
 
-Example:
+CONTENT-HANDLER, when non-nil, is a function receiving two arguments:
+  (COMPONENTS PLIST)
 
-  (org-transclusion-blocks-register-type
-   \\='my-type
-   \\='(:path (:header :my-path
-              :validator my-validator-fn
-              :required t))
-   (lambda (components)
-     (format \"my-type:%s\" (plist-get components :path))))
+COMPONENTS is plist of validated, expanded component values
+  (same as CONSTRUCTOR receives).
+PLIST is keyword plist from `org-transclusion-blocks--params-to-plist'
+  containing :link, :lines, :thing-at-point, :end, etc.
+
+CONTENT-HANDLER returns a payload plist compatible with
+`org-transclusion-add-functions' protocol:
+  (:src-content STRING
+   :src-buf BUFFER
+   :src-beg INTEGER-OR-MARKER
+   :src-end INTEGER-OR-MARKER
+   :tc-type STRING)
+
+Or nil if content cannot be fetched.
+
+When CONTENT-HANDLER is present, `org-transclusion-blocks-add'
+calls it directly instead of dispatching through
+`org-transclusion-add-functions'.  The constructed link string
+is still available in PLIST as :link and :constructed-link.
+
+When CONTENT-HANDLER is nil, the type uses the standard pipeline:
+CONSTRUCTOR builds a link string, which is dispatched through
+`org-transclusion-add-functions' for resolution by follow handlers,
+explicit resolvers, or upstream handlers.
 
 Overwrites existing TYPE registration if present.
 
-Populates `org-transclusion-blocks--type-components' and
-`org-transclusion-blocks--type-constructors'.
+Populates `org-transclusion-blocks--type-components',
+`org-transclusion-blocks--type-constructors', and
+`org-transclusion-blocks--type-content-handlers'.
 
 Returns TYPE symbol."
   (setf (alist-get type org-transclusion-blocks--type-components)
         component-spec)
   (setf (alist-get type org-transclusion-blocks--type-constructors)
         constructor)
+  (when content-handler
+    (setf (alist-get type org-transclusion-blocks--type-content-handlers)
+          content-handler))
   type)
 
 ;;;; Component Extraction
@@ -556,6 +599,7 @@ Shows:
 - Variable expansion support
 - Interaction constraints (required, shadowed-by, requires, conflicts)
 - Constructor function
+- Content handler (if registered)
 - Usage example
 
 See `org-transclusion-blocks-list-types' for available types."
@@ -610,6 +654,15 @@ See `org-transclusion-blocks-list-types' for available types."
                                             (mapconcat #'symbol-name conflicts ", "))))))
             (unless has-interactions
               (insert "  (none)\n")))
+
+          (insert "\nResolution:\n")
+          (if (alist-get type org-transclusion-blocks--type-content-handlers)
+              (progn
+                (insert "  Content handler: direct (bypasses hook dispatch)\n")
+                (insert (format "  Handler: %s\n"
+                                (alist-get type
+                                           org-transclusion-blocks--type-content-handlers))))
+            (insert "  Standard pipeline: constructor -> link -> hook dispatch\n"))
 
           (when-let ((ctor (alist-get type org-transclusion-blocks--type-constructors)))
             (insert (format "\nConstructor: %s\n" ctor)))
